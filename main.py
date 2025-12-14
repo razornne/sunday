@@ -75,39 +75,60 @@ async def receive_email(payload: EmailPayload):
 # 2. ПРИЕМ СООБЩЕНИЙ ТЕЛЕГРАМ (Webhook)
 @app.post("/webhook/telegram")
 async def receive_telegram(request: Request):
-    """Сюда Telegram присылает уведомления, когда кто-то пишет боту"""
-    data = await request.json()
+    """Сюда Telegram присылает уведомления"""
+    try:
+        data = await request.json()
+        print(f"📥 RAW UPDATE: {data}") # Видим ВСЁ, что прислал Телеграм
+    except Exception as e:
+        print(f"❌ JSON ERROR: {e}")
+        return {"status": "error"}
     
-    # Проверяем, что это сообщение
+    # Проверяем структуру
     if "message" not in data:
+        print("⚠️ Update has no 'message'. Skipping.")
         return {"status": "ignored"}
     
     msg = data["message"]
-    chat_id = msg["chat"]["id"]
+    chat_id = msg.get("chat", {}).get("id")
     text = msg.get("text", "")
-
-    # Логика связывания аккаунта: /start <код>
-    if text.startswith("/start") and len(text) > 7:
-        code = text.split(" ")[1] # Берем то, что после пробела
-        print(f"🔗 Попытка привязки. Код: {code}, ChatID: {chat_id}")
-        
-        # Ищем пользователя с таким кодом
-        response = supabase.table("profiles").select("id").eq("verification_code", code).execute()
-        
-        if response.data:
-            user_id = response.data[0]['id']
-            
-            # Обновляем профиль: Сохраняем ID и стираем код (он одноразовый)
-            supabase.table("profiles").update({
-                "telegram_chat_id": str(chat_id),
-                "verification_code": None 
-            }).eq("id", user_id).execute()
-            
-            send_tg_message(chat_id, "✅ Успешно! Ваш Telegram привязан к Sunday AI. Теперь дайджесты будут приходить сюда.")
-        else:
-            send_tg_message(chat_id, "❌ Неверный или устаревший код ссылки. Попробуйте снова через сайт.")
     
-    elif text == "/start":
-        send_tg_message(chat_id, "Привет! Чтобы подключить меня, нажми кнопку 'Connect Telegram' в личном кабинете Sunday AI.")
+    print(f"📨 Processing: ChatID={chat_id}, Text='{text}'")
+
+    # Логика связывания: /start <код>
+    if text.startswith("/start"):
+        parts = text.split(" ")
+        print(f"🧐 Parsing start command. Parts: {parts}")
+
+        if len(parts) > 1:
+            code = parts[1]
+            print(f"🔑 Extract code: {code}. Searching DB...")
+            
+            # Ищем пользователя
+            try:
+                # ВАЖНО: Используем single(), чтобы сразу получить объект или ошибку
+                response = supabase.table("profiles").select("id").eq("verification_code", code).execute()
+                print(f"🗄️ DB Response: {response.data}")
+                
+                if response.data:
+                    user_id = response.data[0]['id']
+                    print(f"✅ User found: {user_id}. Updating...")
+                    
+                    # Обновляем
+                    upd = supabase.table("profiles").update({
+                        "telegram_chat_id": str(chat_id),
+                        "verification_code": None 
+                    }).eq("id", user_id).execute()
+                    print(f"💾 Update Result: {upd.data}")
+                    
+                    send_tg_message(chat_id, "✅ Успешно! Ваш Telegram привязан к Sunday AI.")
+                else:
+                    print("❌ Code not found in DB.")
+                    send_tg_message(chat_id, "❌ Код не найден. Попробуйте снова через сайт.")
+            except Exception as e:
+                print(f"❌ DB ERROR: {e}")
+                send_tg_message(chat_id, "❌ Ошибка базы данных.")
+        else:
+            print("⚠️ Start without code.")
+            send_tg_message(chat_id, "Нажми кнопку на сайте, чтобы получить код.")
 
     return {"status": "ok"}
