@@ -3,7 +3,7 @@ import json
 import google.generativeai as genai
 from supabase import create_client, Client
 from dotenv import load_dotenv
-from email.utils import parseaddr # <--- ЭТО ВАЖНО
+from email.utils import parseaddr
 
 load_dotenv()
 
@@ -16,110 +16,113 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 
 def generate_summary(text):
-    model = genai.GenerativeModel('gemini-pro')
-    # Обрезаем текст, чтобы не перегрузить токенами
-    safe_text = text[:8000] if text else "No text"
+    # ИСПОЛЬЗУЕМ НОВУЮ МОДЕЛЬ FLASH (Она быстрее и работает)
+    model = genai.GenerativeModel('gemini-2.5-pro')
+    
+    safe_text = text[:15000] if text else "No text" # Увеличил лимит, flash переварит больше
     
     prompt = f"""
-    Ты - редактор технического дайджеста. Твоя задача - сделать краткую выжимку из письма.
+    Ты - редактор дайджеста. Сделай краткую выжимку из текста.
+    Текст: {safe_text} 
     
-    Письмо:
-    {safe_text} 
+    Верни JSON с двумя полями:
+    1. "summary_text": Подробный пересказ (Markdown) на русском языке.
+    2. "telegram_text": Короткий пост (макс 400 символов) с эмодзи.
     
-    Сделай 2 версии ответа в формате JSON (без Markdown разметки):
-    1. "summary_text": Подробный пересказ (Markdown) для сайта. Выдели главные мысли.
-    2. "telegram_text": Очень короткий пост для Telegram (макс 400 символов). Начни с эмодзи.
-    
-    Верни ТОЛЬКО валидный JSON.
+    Верни ТОЛЬКО чистый JSON, без ```json``` и лишних слов.
     """
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        print(f"Error generating AI: {e}")
+        print(f"⚠️ Error generating AI: {e}")
         return None
 
 def main():
-    print("🚀 Starting Summarizer...")
+    print("🚀 Starting Summarizer (Gemini Flash Edition)...")
 
-    # 1. Берем НЕОБРАБОТАННЫЕ письма
+    # 1. ЗАГРУЖАЕМ ПОДПИСКИ
+    try:
+        all_subs = supabase.table("subscriptions").select("*").execute().data
+        subs_map = {}
+        for s in all_subs:
+            # Пропускаем, если user_id не заполнен (защита от None)
+            if not s.get('user_id'):
+                continue
+                
+            # Считаем активным, если is_active True или NULL (по умолчанию)
+            is_active = s.get('is_active')
+            if is_active is False: 
+                continue
+
+            email_key = s['sender_email'].strip().lower()
+            if email_key not in subs_map:
+                subs_map[email_key] = []
+            subs_map[email_key].append(s['user_id'])
+            
+        print(f"✅ Active whitelist loaded. Users ready: {len(subs_map)}")
+
+    except Exception as e:
+        print(f"❌ Error loading subscriptions: {e}")
+        return
+
+    # 2. ИЩЕМ ПИСЬМА
     response = supabase.table("raw_emails").select("*").eq("processed", False).execute()
     emails = response.data
 
     if not emails:
-        print("💤 No new emails to process.")
+        print("💤 No new emails.")
         return
 
     print(f"📨 Found {len(emails)} new emails.")
 
     for email_obj in emails:
         raw_sender = email_obj.get('sender', '')
-        
-        # --- МАГИЯ ЗДЕСЬ: Чистим адрес ---
-        # Превращаем "Name <email@site.com>" в "email@site.com"
         name, clean_email = parseaddr(raw_sender)
+        final_sender = clean_email.strip().lower() if clean_email else raw_sender.lower()
         
-        # Если parseaddr не справился, пробуем взять как есть, но в нижнем регистре
-        final_sender_check = clean_email.lower() if clean_email else raw_sender.lower()
-        
-        print(f"Processing: {final_sender_check} (Original: {raw_sender})")
+        print(f"Processing: '{final_sender}'")
 
-        # 2. Ищем ВЛАДЕЛЬЦА подписки
-        # Ищем совпадение по чистому email
-        sub_response = supabase.table("subscriptions").select("user_id")\
-            .ilike("sender_email", final_sender_check)\
-            .eq("is_active", True).execute()
-        
-        subscriptions = sub_response.data
+        user_ids = subs_map.get(final_sender)
 
-        if not subscriptions:
-            print(f"❌ Sender '{final_sender_check}' is not in whitelist. Marking as processed.")
+        if not user_ids:
+            print(f"❌ '{final_sender}' not in whitelist. Skipping.")
             supabase.table("raw_emails").update({"processed": True}).eq("id", email_obj['id']).execute()
             continue
         
-        print(f"✅ Found subscription! Generating digest...")
+        print(f"✅ Generating digest for {len(user_ids)} user(s)...")
 
-        # Генерируем AI контент
-        # Берем plain текст, если его нет - пробуем почистить html (упрощенно)
-        content_to_summarize = email_obj.get('body_plain')
-        if not content_to_summarize and email_obj.get('body_html'):
-             content_to_summarize = email_obj.get('body_html') # В идеале тут нужен clean_html, но пока так
-
-        ai_json_str = generate_summary(content_to_summarize)
+        # Генерируем AI
+        content = email_obj.get('body_plain') or email_obj.get('body_html') or ""
+        ai_raw = generate_summary(content)
         
-        if not ai_json_str:
-            print("⚠️ AI failed to generate summary.")
+        if not ai_raw:
+            print("⚠️ AI generation failed.")
             continue
             
-        # Чистим JSON от лишних символов (AI любит добавлять ```json)
-        cleaned_json = ai_json_str.replace("```json", "").replace("```", "").strip()
+        # Чистим JSON
+        cleaned_json = ai_raw.replace("```json", "").replace("```", "").strip()
         
         try:
             ai_data = json.loads(cleaned_json)
-        except Exception as e:
-            print(f"⚠️ Failed to parse JSON: {e}. Raw: {cleaned_json[:50]}...")
+        except:
+            print(f"⚠️ JSON Parse Error. AI Output: {cleaned_json[:50]}...")
             continue
 
-        # 3. Сохраняем дайджесты
-        for sub in subscriptions:
-            user_id = sub['user_id']
-            
+        # Сохраняем
+        for uid in user_ids:
             digest_data = {
-                "user_id": user_id,
+                "user_id": uid,
                 "raw_email_id": email_obj['id'],
                 "subject": email_obj.get('subject'),
-                "summary_text": ai_data.get('summary_text', 'Error parsing'),
-                "telegram_text": ai_data.get('telegram_text', 'Error parsing'),
+                "summary_text": ai_data.get('summary_text', 'Error'),
+                "telegram_text": ai_data.get('telegram_text', 'Error'),
                 "is_sent": False
             }
-            
-            try:
-                supabase.table("digests").insert(digest_data).execute()
-                print(f"🎉 Digest saved for user {user_id}")
-            except Exception as e:
-                print(f"❌ DB Error: {e}")
+            supabase.table("digests").insert(digest_data).execute()
+            print(f"🎉 Digest saved for user {uid}")
 
-        # 4. Помечаем письмо как обработанное
+        # Помечаем готовым
         supabase.table("raw_emails").update({"processed": True}).eq("id", email_obj['id']).execute()
 
 if __name__ == "__main__":
