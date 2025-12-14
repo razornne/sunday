@@ -31,15 +31,18 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 def send_telegram_alert(chat_id, text):
     """Отправляет сообщение в Telegram"""
-    if not chat_id or not TG_TOKEN:
-        print("⚠️ Telegram token or Chat ID missing. Skipping TG.")
+    if not TG_TOKEN:
+        print("⚠️ TG Error: TELEGRAM_BOT_TOKEN not found in .env")
+        return False
+    if not chat_id:
+        print("⚠️ TG Error: User has no Chat ID")
         return False
     
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "Markdown" # Чтобы работала жирность и ссылки
+        "parse_mode": "Markdown"
     }
     try:
         r = requests.post(url, json=payload)
@@ -54,15 +57,13 @@ def send_telegram_alert(chat_id, text):
 
 def send_email_digest(to_email, subject, markdown_body):
     """Отправляет дайджест на почту"""
-    if not to_email or not EMAIL_USER:
-        print("⚠️ Email creds missing. Skipping Email.")
+    if not EMAIL_USER or not EMAIL_PASS:
+        print("⚠️ Email Error: EMAIL_USER or EMAIL_PASS not found in .env")
         return False
 
     try:
-        # Превращаем Markdown в красивый HTML
         html_content = markdown.markdown(markdown_body)
         
-        # Оборачиваем в простой шаблон
         full_html = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
@@ -76,14 +77,17 @@ def send_email_digest(to_email, subject, markdown_body):
         """
 
         msg = MIMEMultipart()
-        msg['From'] = f"Sunday AI <{EMAIL_USER}>"
+        
+        # ⚠️ ВАЖНОЕ ИЗМЕНЕНИЕ: Отправляем как Alias
+        msg['From'] = "Sunday AI <bot@sundayai.dev>"
+        
         msg['To'] = to_email
         msg['Subject'] = f"☀️ Digest: {subject}"
         msg.attach(MIMEText(full_html, 'html'))
 
-        # Отправка через Gmail SMTP
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
+        # Логинимся под основной почтой (nikita...), чтобы SMTP пустил
         server.login(EMAIL_USER, EMAIL_PASS)
         server.sendmail(EMAIL_USER, to_email, msg.as_string())
         server.quit()
@@ -97,17 +101,17 @@ def send_email_digest(to_email, subject, markdown_body):
 # --- ОСНОВНАЯ ЛОГИКА ---
 
 def generate_summary(text):
-    model = genai.GenerativeModel("models/gemini-2.5-pro")
+    model = genai.GenerativeModel("gemini-2.5-pro")
 
-    safe_text = text[:20000] if text else "No text"
+    safe_text = text[:30000] if text else "No text"
     
     prompt = f"""
     Ты - личный ассистент. Сделай выжимку из текста письма.
     Текст: {safe_text} 
     
     Верни JSON:
-    1. "summary_text": Подробный, структурированный пересказ (Markdown). Используй заголовки и списки.
-    2. "telegram_text": Короткий тизер для мессенджера (макс 500 знаков). Начни с яркого эмодзи, отражающего суть. В конце добавь призыв "Проверь почту для деталей".
+    1. "summary_text": Подробный, структурированный пересказ (Markdown).
+    2. "telegram_text": Короткий тизер для мессенджера (макс 500 знаков). Начни с яркого эмодзи.
     
     Верни ТОЛЬКО JSON.
     """
@@ -120,37 +124,27 @@ def generate_summary(text):
 
 def main():
     print("🚀 Starting Omni-Channel Summarizer...")
-
-    # 1. ЗАГРУЖАЕМ ПОДПИСКИ И ПРОФИЛИ
-    # Нам нужно достать telegram_chat_id и email пользователя из таблицы profiles
     print("📋 Loading subscriptions & profiles...")
+    
     try:
-        # Забираем активные подписки и сразу данные профиля (через join user_id)
-        # В Supabase-py join делается сложно, поэтому сделаем два запроса для надежности
-        
         all_subs = supabase.table("subscriptions").select("*").execute().data
-        
-        # Собираем уникальные user_id
         user_ids_list = list(set([s['user_id'] for s in all_subs if s.get('user_id')]))
         
-        # Загружаем профили этих юзеров
         if user_ids_list:
             profiles_resp = supabase.table("profiles").select("id, email, telegram_chat_id").in_("id", user_ids_list).execute()
             profiles_map = {p['id']: p for p in profiles_resp.data}
         else:
             profiles_map = {}
 
-        # Строим карту: Email отправителя -> Список получателей (их данные)
         subs_map = {}
         for s in all_subs:
             if not s.get('user_id'): continue
-            if s.get('is_active') is False: continue # Пропускаем выключенные
+            if s.get('is_active') is False: continue
 
             email_key = s['sender_email'].strip().lower()
             if email_key not in subs_map:
                 subs_map[email_key] = []
             
-            # Добавляем полные данные юзера в список
             user_data = profiles_map.get(s['user_id'])
             if user_data:
                 subs_map[email_key].append(user_data)
@@ -172,7 +166,6 @@ def main():
     print(f"📨 Found {len(emails)} new emails.")
 
     for email_obj in emails:
-        # Парсим отправителя
         raw_sender = email_obj.get('sender', '')
         name, clean_email = parseaddr(raw_sender)
         final_sender = clean_email.strip().lower() if clean_email else raw_sender.lower()
@@ -188,7 +181,6 @@ def main():
         
         print(f"✅ Sending to {len(recipients)} recipients...")
 
-        # Генерируем AI
         content = email_obj.get('body_plain') or email_obj.get('body_html') or ""
         ai_raw = generate_summary(content)
         
@@ -211,11 +203,12 @@ def main():
             
             # А. Сохраняем в базу (для Сайта)
             digest_data = {
+                "user_id": uid,
                 "raw_email_id": email_obj['id'],
                 "subject": email_obj.get('subject'),
                 "summary_text": ai_data.get('summary_text', 'Error'),
                 "telegram_text": ai_data.get('telegram_text', 'Error'),
-                "is_sent": True # Сразу ставим True, так как сейчас отправим
+                "is_sent": True
             }
             try:
                 supabase.table("digests").insert(digest_data).execute()
@@ -227,12 +220,13 @@ def main():
             if tg_id:
                 tg_msg = f"{ai_data.get('telegram_text')}\n\n🔗 [Читать на сайте](https://sunday-digest.streamlit.app)"
                 send_telegram_alert(tg_id, tg_msg)
+            else:
+                print(f"   ⚠️ No Telegram ID for user {user_email}")
             
             # В. Отправляем на Email
             if user_email:
                 send_email_digest(user_email, email_obj.get('subject'), ai_data.get('summary_text'))
 
-        # Помечаем письмо обработанным
         supabase.table("raw_emails").update({"processed": True}).eq("id", email_obj['id']).execute()
 
 if __name__ == "__main__":
