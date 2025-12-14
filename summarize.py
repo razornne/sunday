@@ -97,7 +97,8 @@ def send_email_digest(to_email, subject, markdown_body):
 # --- ОСНОВНАЯ ЛОГИКА ---
 
 def generate_summary(text):
-    model = genai.GenerativeModel('gemini-2.5-pro')
+    model = genai.GenerativeModel("models/gemini-2.5-pro")
+
     safe_text = text[:20000] if text else "No text"
     
     prompt = f"""
