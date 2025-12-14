@@ -211,7 +211,6 @@ def main():
             
             # А. Сохраняем в базу (для Сайта)
             digest_data = {
-                "user_id": uid,
                 "raw_email_id": email_obj['id'],
                 "subject": email_obj.get('subject'),
                 "summary_text": ai_data.get('summary_text', 'Error'),
