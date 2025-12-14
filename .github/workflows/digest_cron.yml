@@ -22,19 +22,30 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Debug Secrets (Check if they exist)
+      run: |
+        if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+          echo "❌ ERROR: TELEGRAM_BOT_TOKEN is empty!"
+        else
+          echo "✅ SUCCESS: TELEGRAM_BOT_TOKEN found (hidden)"
+        fi
+        
+        if [ -z "${{ secrets.EMAIL_USER }}" ]; then
+          echo "❌ ERROR: EMAIL_USER is empty!"
+        else
+          echo "✅ SUCCESS: EMAIL_USER found"
+        fi
+
     - name: Run Summarizer
-      env:
-        # Сюда мы передаем ключи из сейфа в скрипт
+      # Блок env должен быть на одном уровне с name и run
+      env: 
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        
-        # ВАЖНО: Вот эти строки передают новые ключи
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         EMAIL_USER: ${{ secrets.EMAIL_USER }}
         EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        
-        # Настройки почты (можно жестко прописать, это не секрет)
         SMTP_SERVER: "smtp.gmail.com"
         SMTP_PORT: 587
+      # run должен быть после env
       run: python summarize.py
