@@ -1,131 +1,107 @@
 import os
-import json
-from dotenv import load_dotenv
-from supabase import create_client, Client
 import google.generativeai as genai
-import time
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
 load_dotenv()
 
 # Настройки
-supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Функция генерации для конкретного юзера
-def process_user_digest(user_id, role, emails):
-    print(f"   👤 User {user_id} (Role: {role}). Emails: {len(emails)}")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-    # 1. Готовим контент
-    clean_content = ""
-    unique_sources = set()
-    total_chars = 0
-    ids_to_update = []
-
-    for email in emails:
-        body_part = email['body_text'][:10000] # Лимит на письмо
-        unique_sources.add(email['sender'])
-        total_chars += len(body_part)
-        clean_content += f"\n--- SOURCE: {email['sender']} ---\nSUBJECT: {email['subject']}\n{body_part}\n"
-        ids_to_update.append(email['id'])
-
-    # 2. Настраиваем модель под РОЛЬ пользователя
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-pro", 
-        generation_config={"response_mime_type": "application/json"},
-        system_instruction=f"""
-        You are an Elite AI Analyst. Create a personalized digest.
-        TARGET AUDIENCE: {role if role else "General Tech Reader"}.
-        
-        ### INSTRUCTIONS
-        1. Filter out garbage.
-        2. Focus on what matters specifically for a {role}.
-        3. If the role is "Investor", focus on deals/risks. If "Engineer", focus on code/tools.
-        
-        ### OUTPUT (JSON) with keys: "telegram_digest", "email_html"
-        
-        Structure for Telegram:
-        # 🔥 Top Story
-        ...
-        # 🎯 Why this matters for you ({role})
-        • [Insight 1]
-        
-        Structure for Email:
-        <h3>🔥 Top Story</h3>
-        ...
-        <h3>🎯 Why this matters for you ({role})</h3>
-        <ul><li>[Insight 1]</li></ul>
-        """
-    )
-
+def generate_summary(text):
+    model = genai.GenerativeModel('gemini-pro')
+    prompt = f"""
+    Ты - редактор технического дайджеста. Твоя задача - сделать краткую выжимку из письма.
+    
+    Письмо:
+    {text[:8000]} 
+    
+    Сделай 2 версии ответа в формате JSON:
+    1. "summary_text": Подробный пересказ (Markdown) для сайта. Выдели главные мысли, ссылки и инсайты.
+    2. "telegram_text": Очень короткий пост для Telegram (макс 400 символов). Начни с эмодзи.
+    
+    Верни ТОЛЬКО валидный JSON без лишних слов.
+    """
     try:
-        # 3. Генерируем
-        user_prompt = f"Digest these emails for a {role}:\n{clean_content}"
-        response = model.generate_content(user_prompt)
-        
-        result = json.loads(response.text)
-        tg_text = result.get("telegram_digest", "Error")
-        email_html = result.get("email_html", "Error")
-
-        # Добавляем статистику
-        meta = f"\n\n📦 `Meta: {len(emails)} emails, {len(unique_sources)} sources`"
-        tg_text += meta
-        
-        # 4. Сохраняем (ВАЖНО: с user_id)
-        data = {
-            "user_id": user_id,  # <-- ПРИВЯЗКА К ЮЗЕРУ
-            "telegram_text": tg_text,
-            "email_html": email_html
-        }
-        supabase.table("digests").insert(data).execute()
-
-        # 5. Помечаем письма прочитанными
-        for eid in ids_to_update:
-            supabase.table("raw_emails").update({"is_processed": True}).eq("id", eid).execute()
-
-        print("   ✅ Digest saved.")
-
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        print(f"   ❌ Error processing user {user_id}: {e}")
-        # print(response.text) # раскомментируй для отладки
+        print(f"Error generating AI: {e}")
+        return None
 
 def main():
-    print("💎 Starting SaaS Digest Generation...")
+    print("🚀 Starting Summarizer...")
 
-    # 1. Находим юзеров, у которых есть новые письма
-    # Supabase не умеет делать "DISTINCT" в простом клиенте элегантно, 
-    # поэтому берем все непрочитанные письма и группируем в Python.
-    
-    response = supabase.table("raw_emails").select("user_id, id, sender, subject, body_text")\
-        .eq("is_processed", False).execute()
-    
-    all_emails = response.data
+    # 1. Берем НЕОБРАБОТАННЫЕ письма (processed = FALSE)
+    response = supabase.table("raw_emails").select("*").eq("processed", False).execute()
+    emails = response.data
 
-    if not all_emails:
-        print("💤 No new emails for anyone.")
+    if not emails:
+        print("💤 No new emails to process.")
         return
 
-    # Группировка: { 'user_uuid_123': [email1, email2], 'user_uuid_456': [email3] }
-    user_buckets = {}
-    for email in all_emails:
-        uid = email['user_id']
-        if not uid: continue # Пропускаем письма-сироты
-        if uid not in user_buckets:
-            user_buckets[uid] = []
-        user_buckets[uid].append(email)
+    print(f"📨 Found {len(emails)} new emails.")
 
-    print(f"found active users: {len(user_buckets)}")
+    for email in emails:
+        sender = email.get('sender')
+        print(f"Processing email from: {sender}")
 
-    # 2. Обрабатываем каждого юзера отдельно
-    for user_id, emails in user_buckets.items():
-        # Получаем профиль юзера, чтобы узнать роль
-        profile_res = supabase.table("profiles").select("role").eq("id", user_id).execute()
+        # 2. Ищем ВЛАДЕЛЬЦА подписки (Кто подписан на этого отправителя?)
+        # ВАЖНО: Мы ищем user_id в таблице subscriptions, у которого sender_email совпадает
+        sub_response = supabase.table("subscriptions").select("user_id")\
+            .eq("sender_email", sender).eq("is_active", True).execute()
         
-        role = "Tech Reader"
-        if profile_res.data:
-            role = profile_res.data[0].get('role', "Tech Reader")
+        subscriptions = sub_response.data
+
+        if not subscriptions:
+            print(f"❌ Sender {sender} is not in whitelist. Marking as processed & Skipping.")
+            # Помечаем как обработанное, чтобы не застрять на нем вечно
+            supabase.table("raw_emails").update({"processed": True}).eq("id", email['id']).execute()
+            continue
         
-        process_user_digest(user_id, role, emails)
-        time.sleep(2) # Пауза между юзерами, чтобы не упереться в лимиты API
+        # Если подписано несколько людей на одну рассылку, создаем дайджест для КАЖДОГО
+        import json
+        
+        # Генерируем AI контент (один раз на письмо)
+        raw_text = email.get('body_plain', '') or "No text content"
+        ai_json_str = generate_summary(raw_text)
+        
+        if not ai_json_str:
+            print("⚠️ AI failed to generate summary.")
+            continue
+            
+        # Чистим JSON от Markdown кавычек если они есть
+        ai_json_str = ai_json_str.replace("```json", "").replace("```", "")
+        
+        try:
+            ai_data = json.loads(ai_json_str)
+        except:
+            print("⚠️ Failed to parse JSON from AI.")
+            continue
+
+        # 3. Сохраняем дайджесты для всех подписчиков
+        for sub in subscriptions:
+            user_id = sub['user_id']
+            
+            digest_data = {
+                "user_id": user_id,
+                "raw_email_id": email['id'],
+                "subject": email.get('subject'),
+                "summary_text": ai_data.get('summary_text'),
+                "telegram_text": ai_data.get('telegram_text'),
+                "is_sent": False
+            }
+            
+            supabase.table("digests").insert(digest_data).execute()
+            print(f"✅ Digest created for user {user_id}")
+
+        # 4. Помечаем письмо как обработанное
+        supabase.table("raw_emails").update({"processed": True}).eq("id", email['id']).execute()
 
 if __name__ == "__main__":
     main()
