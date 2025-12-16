@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import os
 import email
+from email.utils import parseaddr
 import requests
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -47,88 +48,95 @@ def parse_email(raw_content):
     return body_plain, body_html
 
 def send_tg_message(chat_id, text):
-    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text})
+    if not TG_TOKEN: return
+    try:
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text})
+    except: pass
 
 # --- РОУТЫ ---
 
 @app.get("/")
 def read_root():
-    return {"status": "Sunday AI Backend Active 🚀"}
+    return {"status": "Sunday AI Backend Active (v0.2) 🚀"}
 
-# 1. ПРИЕМ ПИСЕМ (От Cloudflare)
+# 1. ПРИЕМ ПИСЕМ (ОТ Cloudflare)
 @app.post("/webhook/email")
 async def receive_email(payload: EmailPayload):
     try:
+        # 1. Очищаем адрес получателя (на всякий случай)
+        _, clean_recipient = parseaddr(payload.recipient)
+        clean_recipient = clean_recipient.strip().lower()
+
+        print(f"📨 Incoming mail for: {clean_recipient}")
+
+        # 2. Ищем Владельца адреса (Фейс-контроль)
+        # Мы ищем юзера, у которого personal_email совпадает с получателем
+        user_res = supabase.table("profiles").select("id").eq("personal_email", clean_recipient).execute()
+        
+        if not user_res.data:
+            print(f"⛔ User not found for email: {clean_recipient}. Rejecting.")
+            # Возвращаем OK, чтобы Cloudflare не пытался слать снова, но не сохраняем
+            return {"status": "ignored_unknown_user"}
+        
+        user_id = user_res.data[0]['id']
+        print(f"✅ User identified: {user_id}")
+
+        # 3. Парсим и Сохраняем
         plain, html = parse_email(payload.raw_email)
         if not html and plain: html = f"<div>{plain.replace(chr(10), '<br>')}</div>"
         
         data = {
-            "sender": payload.sender, "recipient": payload.recipient,
-            "subject": payload.subject, "body_plain": plain, "body_html": html,
+            "user_id": user_id,  # <--- ВАЖНО: Привязываем письмо к юзеру
+            "sender": payload.sender,
+            "recipient": payload.recipient,
+            "subject": payload.subject, 
+            "body_plain": plain, 
+            "body_html": html,
             "processed": False
         }
+        
         supabase.table("raw_emails").insert(data).execute()
+        print("💾 Email saved to DB.")
+        
         return {"status": "ok"}
+
     except Exception as e:
+        print(f"❌ Error receiving email: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # 2. ПРИЕМ СООБЩЕНИЙ ТЕЛЕГРАМ (Webhook)
 @app.post("/webhook/telegram")
 async def receive_telegram(request: Request):
-    """Сюда Telegram присылает уведомления"""
     try:
         data = await request.json()
-        print(f"📥 RAW UPDATE: {data}") # Видим ВСЁ, что прислал Телеграм
     except Exception as e:
-        print(f"❌ JSON ERROR: {e}")
         return {"status": "error"}
     
-    # Проверяем структуру
-    if "message" not in data:
-        print("⚠️ Update has no 'message'. Skipping.")
-        return {"status": "ignored"}
+    if "message" not in data: return {"status": "ignored"}
     
     msg = data["message"]
     chat_id = msg.get("chat", {}).get("id")
     text = msg.get("text", "")
     
-    print(f"📨 Processing: ChatID={chat_id}, Text='{text}'")
-
     # Логика связывания: /start <код>
     if text.startswith("/start"):
         parts = text.split(" ")
-        print(f"🧐 Parsing start command. Parts: {parts}")
-
         if len(parts) > 1:
             code = parts[1]
-            print(f"🔑 Extract code: {code}. Searching DB...")
-            
-            # Ищем пользователя
             try:
-                # ВАЖНО: Используем single(), чтобы сразу получить объект или ошибку
-                response = supabase.table("profiles").select("id").eq("verification_code", code).execute()
-                print(f"🗄️ DB Response: {response.data}")
-                
+                response = supabase.table("profiles").select("id").eq("verification_code", code).single().execute()
                 if response.data:
-                    user_id = response.data[0]['id']
-                    print(f"✅ User found: {user_id}. Updating...")
-                    
-                    # Обновляем
-                    upd = supabase.table("profiles").update({
+                    user_id = response.data['id']
+                    supabase.table("profiles").update({
                         "telegram_chat_id": str(chat_id),
                         "verification_code": None 
                     }).eq("id", user_id).execute()
-                    print(f"💾 Update Result: {upd.data}")
-                    
                     send_tg_message(chat_id, "✅ Успешно! Ваш Telegram привязан к Sunday AI.")
                 else:
-                    print("❌ Code not found in DB.")
-                    send_tg_message(chat_id, "❌ Код не найден. Попробуйте снова через сайт.")
+                    send_tg_message(chat_id, "❌ Код не найден.")
             except Exception as e:
-                print(f"❌ DB ERROR: {e}")
-                send_tg_message(chat_id, "❌ Ошибка базы данных.")
+                print(f"DB Error: {e}")
         else:
-            print("⚠️ Start without code.")
-            send_tg_message(chat_id, "Нажми кнопку на сайте, чтобы получить код.")
+            send_tg_message(chat_id, "Привет! Возьми код на сайте dashboard.")
 
     return {"status": "ok"}
