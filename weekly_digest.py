@@ -4,7 +4,7 @@ import smtplib
 import requests
 import google.generativeai as genai
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart  # <--- Вот он, потерянный герой!
+from email.mime.multipart import MIMEMultipart
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from email.utils import parseaddr
@@ -30,7 +30,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 # --- HELPER FUNCTIONS ---
 
 def send_telegram_alert(chat_id, text):
-    """Sends a push notification to Telegram."""
     if not TG_TOKEN or not chat_id: return False
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
@@ -39,13 +38,12 @@ def send_telegram_alert(chat_id, text):
     except: pass
 
 def send_email_report(to_email, subject, html_content):
-    """Sends the rich HTML digest via SMTP."""
     if not EMAIL_USER or not EMAIL_PASS: 
         print("⚠️ Email creds missing.")
         return False
     try:
         msg = MIMEMultipart()
-        msg['From'] = "Sunday AI <bot@sundayai.dev>"
+        msg['From'] = f"Sunday AI <{EMAIL_USER}>"
         msg['To'] = to_email
         msg['Subject'] = subject
         msg.attach(MIMEText(html_content, 'html'))
@@ -64,13 +62,10 @@ def send_email_report(to_email, subject, html_content):
 # --- CORE ANALYTICS ENGINE ---
 
 def synthesize_week(emails_context, user_profile):
-    """
-    The Brain: Converts raw text batches into structured intelligence.
-    """
-    model = genai.GenerativeModel("gemini-2.5-flash") 
+    model = genai.GenerativeModel("gemini-1.5-flash") 
     
     role = user_profile.get('role', 'General User')
-    focus = ", ".join(user_profile.get('focus_areas', [])) or "General Tech"
+    focus = ", ".join(user_profile.get('focus_areas', []) or []) or "General Tech"
     
     prompt = f"""
     ROLE:
@@ -79,29 +74,28 @@ def synthesize_week(emails_context, user_profile):
 
     OBJECTIVE:
     Synthesize the provided batch of emails into a high-value "Sunday Brief".
-    DO NOT summarize email by email. Instead, synthesize information into trends and insights.
     
     CORE RULES:
-    1. **Signal over Noise:** Prioritize emails with higher "Trust Score". If a low-trust source contradicts a high-trust one, ignore the low-trust one.
-    2. **Synthesis:** If multiple emails talk about the same topic, combine them into one powerful insight.
+    1. **Signal over Noise:** Ignore marketing fluff. Focus on insights.
+    2. **Synthesis:** Combine similar topics.
     3. **Personalization:** Explain WHY this matters for a "{role}".
-    4. **Structure:** Use Markdown for formatting.
+    4. **Structure:** Use Markdown.
 
     INPUT DATA (List of emails):
     {emails_context}
 
     OUTPUT FORMAT (Strict JSON only):
     {{
-        "big_picture": "One paragraph (Markdown). The overarching narrative of the week.",
+        "big_picture": "One paragraph (Markdown). The overarching narrative.",
         "trends": [
             {{
-                "title": "Trend Title (Start with an Emoji)",
-                "insight": "Deep analysis: What happened and why it matters? (Markdown)",
-                "sources_indices": [1, 3] 
+                "title": "Trend Title (Emoji)",
+                "insight": "Deep analysis (Markdown)",
+                "sources_indices": [1] 
             }}
         ],
-        "noise_filter": "List of topics you filtered out.",
-        "telegram_teaser": "Punchy teaser (max 400 chars) with emoji."
+        "noise_filter": "List of filtered topics.",
+        "telegram_teaser": "Punchy teaser (max 400 chars)."
     }}
     """
     
@@ -114,29 +108,22 @@ def synthesize_week(emails_context, user_profile):
         return None
 
 def main():
-    print("🚀 Starting Weekly Synthesizer (v0.1 - SaaS Edition)...")
+    print("🚀 Starting Weekly Synthesizer (v0.2 - Personal Inbox)...")
     
-    # 1. LOAD CONFIGURATION
+    # 1. LOAD CONFIGURATION & PROFILES
     try:
-        subs_resp = supabase.table("subscriptions").select("*").execute()
+        # Загружаем ВСЕХ пользователей, чтобы быстро находить их по ID
+        profiles_resp = supabase.table("profiles").select("*").execute()
+        profiles_map = {p['id']: p for p in profiles_resp.data}
+        print(f"✅ Loaded {len(profiles_map)} user profiles.")
+
+        # Загружаем подписки (для старой логики)
+        subs_resp = supabase.table("subscriptions").select("*").eq("is_active", True).execute()
         subs_map = {} 
-        
-        user_ids = set()
         for s in subs_resp.data:
-            if not s.get('is_active'): continue
             key = s['sender_email'].strip().lower()
             if key not in subs_map: subs_map[key] = []
             subs_map[key].append(s)
-            user_ids.add(s['user_id'])
-            
-        if not user_ids:
-            print("💤 No active users found.")
-            return
-
-        profiles_resp = supabase.table("profiles").select("*").in_("id", list(user_ids)).execute()
-        profiles_map = {p['id']: p for p in profiles_resp.data}
-        
-        print(f"✅ Config loaded. Processing for {len(profiles_map)} users.")
 
     except Exception as e:
         print(f"❌ Config Loading Error: {e}")
@@ -154,19 +141,39 @@ def main():
     processed_ids = [] 
 
     for email in raw_emails:
-        sender_raw = email.get('sender', '')
-        _, clean_email = parseaddr(sender_raw)
-        sender_key = clean_email.strip().lower()
+        # ЛОГИКА v0.2: Прямая привязка (Direct Ownership)
+        direct_user_id = email.get('user_id')
         
-        subscribers = subs_map.get(sender_key)
-        
-        if not subscribers:
-            print(f"🗑️ Skipping email from {sender_key}")
-            processed_ids.append(email['id'])
+        target_users = []
+
+        if direct_user_id:
+            # Если у письма уже есть хозяин (пришло на личный адрес)
+            target_users.append({
+                "user_id": direct_user_id,
+                "trust": 10, # Личным письмам доверяем максимально
+                "alias": email.get('sender')
+            })
+        else:
+            # ЛОГИКА v0.1: Подписки (Fallback)
+            sender_raw = email.get('sender', '')
+            _, clean_email = parseaddr(sender_raw)
+            sender_key = clean_email.strip().lower()
+            subscribers = subs_map.get(sender_key, [])
+            for sub in subscribers:
+                target_users.append({
+                    "user_id": sub['user_id'],
+                    "trust": sub.get('trust_score', 5),
+                    "alias": sub.get('source_alias') or sender_key
+                })
+
+        if not target_users:
+            print(f"🗑️ Skipping orphan email {email['id']}")
+            processed_ids.append(email['id']) # Помечаем как обработанное, чтобы не висело
             continue
             
-        for sub in subscribers:
-            uid = sub['user_id']
+        # Раскладываем по пачкам пользователей
+        for target in target_users:
+            uid = target['user_id']
             if uid not in user_batches: user_batches[uid] = []
             
             user_batches[uid].append({
@@ -174,8 +181,8 @@ def main():
                 "id": email['id'], 
                 "subject": email.get('subject', 'No Subject'),
                 "body": email.get('body_plain') or email.get('body_html') or "",
-                "trust": sub.get('trust_score', 5),
-                "alias": sub.get('source_alias') or sender_key
+                "trust": target['trust'],
+                "alias": target['alias']
             })
             
         if email['id'] not in processed_ids:
@@ -193,7 +200,7 @@ def main():
         for item in batch:
             safe_body = item['body'][:8000] 
             context_str += f"\n--- EMAIL #{item['index']} ---\n"
-            context_str += f"From: {item['alias']} (Trust Score: {item['trust']}/10)\n"
+            context_str += f"From: {item['alias']} (Trust: {item['trust']})\n"
             context_str += f"Subject: {item['subject']}\n"
             context_str += f"Content: {safe_body}\n"
             email_ids.append(item['id'])
@@ -208,7 +215,7 @@ def main():
         digest_data = {
             "user_id": uid,
             "period_end": datetime.now().isoformat(),
-            "source_email_ids": email_ids, # Теперь это массив чисел, всё ок!
+            "source_email_ids": email_ids,
             "structured_content": ai_result,
             "subject": f"Sunday Brief: {ai_result.get('trends', [{}])[0].get('title', 'Weekly Update')}",
             "summary_text": ai_result.get('big_picture', ''), 
