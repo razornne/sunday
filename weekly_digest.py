@@ -2,7 +2,8 @@ import os
 import json
 import smtplib
 import requests
-import google.generativeai as genai
+# Используем новый стандарт импорта, чтобы убрать предупреждение
+import google.generativeai as genai 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from supabase import create_client, Client
@@ -10,30 +11,25 @@ from dotenv import load_dotenv
 from datetime import datetime
 import markdown
 
-# Загружаем настройки
 load_dotenv()
 
 # --- 1. КОНФИГУРАЦИЯ ---
+# Используем secrets для GitHub Actions или .env для локалки
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# Настройки почты для отправки отчетов
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
 SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
 
-# Инициализация клиентов
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_KEY)
 
-# --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- 2. ФУНКЦИИ ---
 
 def send_email_report(to_email, subject, html_body):
-    """Отправляет готовый дайджест на почту юзера"""
     if not EMAIL_USER or not EMAIL_PASS:
-        print("⚠️ Ошибка: Данные почты (SMTP) не настроены.")
         return False
     try:
         msg = MIMEMultipart()
@@ -41,130 +37,104 @@ def send_email_report(to_email, subject, html_body):
         msg['To'] = to_email
         msg['Subject'] = subject
         msg.attach(MIMEText(html_body, 'html'))
-
         with smtplib.SMTP(SMTP_SERVER, 587) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, to_email, msg.as_string())
         return True
     except Exception as e:
-        print(f"❌ Ошибка SMTP: {e}")
+        print(f"❌ SMTP Error: {e}")
         return False
 
 def get_ai_synthesis(emails_text, profile):
-    """Генерирует дайджест через Gemini"""
+    # Используем flash-модель для скорости и экономии
     model = genai.GenerativeModel("gemini-2.5-pro")
-    
     prompt = f"""
-    Твоя роль: {profile.get('role', 'Аналитик')}. 
-    Твои интересы: {profile.get('focus_areas')}.
-    
-    ЗАДАЧА: Сделай краткий и ценный обзор следующих писем.
-    Верни строго JSON:
+    Role: {profile.get('role', 'User')}. Focus: {profile.get('focus_areas')}.
+    Summarize these emails into JSON:
     {{
-      "big_picture": "одно предложение о главном за неделю",
-      "trends": [
-        {{"title": "заголовок тренда", "insight": "почему это важно для этой роли"}}
-      ],
-      "noise_filter": "что ты проигнорировал (реклама, спам)"
+      "big_picture": "summary",
+      "trends": [{{"title": "...", "insight": "..."}}],
+      "noise_filter": "..."
     }}
-
-    ПИСЬМА:
-    {emails_text}
+    Emails: {emails_text}
     """
-    
     try:
         response = model.generate_content(prompt)
-        # Очистка от markdown-обертки JSON
-        clean_json = response.text.strip().replace("```json", "").replace("```", "")
-        return json.loads(clean_json)
-    except Exception as e:
-        print(f"⚠️ AI Error: {e}")
-        return None
+        # Очистка от лишних символов
+        text = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(text)
+    except: return None
 
-# --- 3. ОСНОВНОЙ ПРОЦЕСС ---
+# --- 3. MAIN ---
 
 def main():
-    # Определяем текущий момент (в UTC)
+    # Работаем строго с UTC временем
     now = datetime.utcnow()
-    current_day = now.strftime("%A")
+    current_day = now.strftime("%A") 
     current_hour = now.strftime("%H:00")
     
-    print(f"⏰ Проверка расписания: {current_day} {current_hour} UTC")
+    print(f"⏰ Скрипт запущен: {current_day}, {current_hour} UTC")
 
-    # 1. Находим пользователей, которым пора отправлять отчет именно сейчас
-    users_res = supabase.table("profiles")\
-        .select("*")\
-        .eq("digest_day", current_day)\
-        .eq("digest_time", current_hour)\
-        .execute()
-    
-    active_users = users_res.data
-    if not active_users:
-        print("💤 Для этого часа запланированных отчетов нет.")
+    # ЗАПРОС К БАЗЕ: Теперь мы уверены, что digest_day — это text
+    try:
+        users_res = supabase.table("profiles")\
+            .select("*")\
+            .eq("digest_day", current_day)\
+            .execute()
+    except Exception as e:
+        print(f"❌ Ошибка запроса к базе: {e}")
         return
 
-    print(f"✅ Найдено пользователей для обработки: {len(active_users)}")
+    active_users = users_res.data
+    if not active_users:
+        print("💤 Нет запланированных отчетов на этот день.")
+        return
 
     for user in active_users:
+        # Проверяем время (отсекаем секунды если они есть в базе)
+        user_time = user.get('digest_time', '09:00')[:5]
+        if user_time != current_hour[:5]:
+            continue
+
         uid = user['id']
-        email_addr = user['email']
-        
-        # 2. Собираем новые письма именно этого пользователя
+        print(f"🧠 Обработка дайджеста для {user['email']}...")
+
         emails_res = supabase.table("raw_emails")\
             .select("*")\
             .eq("user_id", uid)\
             .eq("processed", False)\
             .execute()
-        
-        new_emails = emails_res.data
-        if not new_emails:
-            print(f"📪 У {email_addr} нет новых писем. Пропускаем.")
+
+        if not emails_res.data:
+            print(f"📪 Новых писем нет.")
             continue
 
-        print(f"📧 Обработка {len(new_emails)} писем для {email_addr}...")
-
-        # Формируем контекст для AI
+        # Сбор данных
         context = ""
         email_ids = []
-        for e in new_emails:
-            context += f"От: {e['sender']}\nТема: {e['subject']}\nТекст: {e['body_plain'][:2000]}\n---\n"
+        for e in emails_res.data:
+            context += f"Subj: {e['subject']}\nText: {e['body_plain'][:1500]}\n---\n"
             email_ids.append(e['id'])
 
-        # 3. Генерируем дайджест
         synthesis = get_ai_synthesis(context, user)
-        if not synthesis:
-            continue
+        if synthesis:
+            # Сохраняем в базу
+            digest_obj = {
+                "user_id": uid,
+                "structured_content": synthesis,
+                "source_email_ids": email_ids,
+                "subject": f"Sunday Brief: {synthesis['big_picture'][:40]}..."
+            }
+            supabase.table("digests").insert(digest_obj).execute()
 
-        # 4. Сохраняем и отправляем
-        digest_obj = {
-            "user_id": uid,
-            "structured_content": synthesis,
-            "source_email_ids": email_ids,
-            "subject": f"Sunday Brief: {synthesis['big_picture'][:50]}..."
-        }
-        
-        supabase.table("digests").insert(digest_obj).execute()
-
-        # HTML-письмо (дизайн совпадает с дашбордом)
-        html_report = f"""
-        <div style="font-family: sans-serif; color: #333; max-width: 600px;">
-            <h2 style="color: #2e86de;">☀️ Ваш Sunday Brief</h2>
-            <div style="background: #f0f7ff; padding: 15px; border-radius: 8px; border-left: 4px solid #2e86de;">
-                <strong>Общая картина:</strong><br>{synthesis['big_picture']}
-            </div>
-            <h3>Главные инсайты:</h3>
-            {''.join([f"<b>{t['title']}</b><p>{t['insight']}</p>" for t in synthesis['trends']])}
-            <hr>
-            <p style="font-size: 11px; color: #999;">Отфильтрованный шум: {synthesis['noise_filter']}</p>
-        </div>
-        """
-        
-        if send_email_report(email_addr, digest_obj['subject'], html_report):
-            # 5. Помечаем письма как обработанные
-            for eid in email_ids:
-                supabase.table("raw_emails").update({"processed": True}).eq("id", eid).execute()
-            print(f"🚀 Дайджест для {email_addr} успешно отправлен!")
+            # Отправка
+            html = f"<h2>Ваш отчет</h2><p>{synthesis['big_picture']}</p>"
+            if send_email_report(user['email'], digest_obj['subject'], html):
+                # Помечаем письма обработанными
+                for eid in email_ids:
+                    supabase.table("raw_emails").update({"processed": True}).eq("id", eid).execute()
+                print(f"✅ Отправлено!")
 
 if __name__ == "__main__":
     main()
