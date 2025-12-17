@@ -1,209 +1,145 @@
 import streamlit as st
 from supabase import create_client, Client
-import pandas as pd
-import json
-from datetime import datetime
 import os
 from dotenv import load_dotenv
 
 # --- НАСТРОЙКА СТРАНИЦЫ ---
-st.set_page_config(
-    page_title="Sunday AI",
-    page_icon="☀️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Загрузка переменных (для локального запуска)
+st.set_page_config(page_title="Sunday AI", page_icon="☀️", layout="wide")
 load_dotenv()
 
-# --- ПОДКЛЮЧЕНИЕ К БАЗЕ ---
+# --- СТИЛИ ДЛЯ ТЕМНОЙ ТЕМЫ ---
+st.markdown("""
+    <style>
+    /* Адаптивные карточки дайджестов */
+    .digest-card {
+        padding: 1.5rem;
+        border-radius: 0.75rem;
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        margin-bottom: 1rem;
+        background-color: rgba(128, 128, 128, 0.05);
+    }
+    
+    /* Красивый акцент на Big Picture */
+    .big-picture-box {
+        padding: 1rem;
+        border-left: 4px solid #2e86de;
+        background-color: rgba(46, 134, 222, 0.1);
+        border-radius: 0.4rem;
+        margin: 1rem 0;
+    }
+
+    /* Настройка шрифтов для читаемости в темной теме */
+    .stMarkdown p {
+        line-height: 1.6;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 @st.cache_resource
 def init_connection():
-    # Пытаемся взять из секретов Streamlit (для Cloud) или из .env (локально)
     try:
         url = st.secrets["SUPABASE_URL"]
         key = st.secrets["SUPABASE_KEY"]
     except:
         url = os.environ.get("SUPABASE_URL")
         key = os.environ.get("SUPABASE_KEY")
-        
-    if not url or not key:
-        st.error("❌ Database keys not found. Check .env or secrets.toml")
-        st.stop()
-        
     return create_client(url, key)
 
 supabase = init_connection()
 
-# --- CSS ДЛЯ КРАСОТЫ ---
-st.markdown("""
-    <style>
-    .big-picture {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #ff4b4b;
-        margin-bottom: 25px;
-    }
-    .trend-title {
-        font-size: 20px;
-        font-weight: 600;
-        color: #0e1117;
-    }
-    .noise-text {
-        font-size: 12px;
-        color: #888;
-        font-style: italic;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- ФУНКЦИИ ---
-
-def login_user(email):
-    """Ищет пользователя по email"""
+# --- ФУНКЦИЯ СОХРАНЕНИЯ ---
+def save_user_settings(user_id, role, focus, day, hour, tz):
     try:
-        response = supabase.table("profiles").select("*").eq("email", email).execute()
-        if response.data:
-            return response.data[0]
-        else:
-            return None
-    except Exception as e:
-        st.error(f"Login error: {e}")
-        return None
-
-def save_profile_settings(user_id, role, focus_areas):
-    """Обновляет настройки AI"""
-    try:
-        focus_list = [x.strip() for x in focus_areas.split(",") if x.strip()]
-        
+        focus_list = [f.strip() for f in focus.split(",") if f.strip()]
         supabase.table("profiles").update({
-            "role": role,
-            "focus_areas": focus_list
+            "role": role, "focus_areas": focus_list,
+            "digest_day": day, "digest_time": hour, "timezone": tz
         }).eq("id", user_id).execute()
-        
-        st.success("✅ Profile updated! Next brief will adapt to this.")
-        # Очищаем кэш данных, но не ресурсов (подключения к БД)
-        st.cache_data.clear()
+        st.success("✅ Настройки сохранены!")
         return True
     except Exception as e:
-        st.error(f"Save error: {e}")
+        st.error(f"Ошибка: {e}")
         return False
 
-def get_digests(user_id):
-    """Получает все дайджесты пользователя"""
-    try:
-        response = supabase.table("digests")\
-            .select("*")\
-            .eq("user_id", user_id)\
-            .order("created_at", desc=True)\
-            .execute()
-        return response.data
-    except:
-        return []
-
-# --- ИНТЕРФЕЙС ---
-
 def main():
-    # 1. SIDEBAR / LOGIN
-    with st.sidebar:
+    if 'user' not in st.session_state:
         st.title("☀️ Sunday AI")
-        
-        # Простая эмуляция авторизации
-        if 'user' not in st.session_state:
-            email_input = st.text_input("Login (Email)", placeholder="you@example.com")
-            if st.button("Enter"):
-                user = login_user(email_input.strip().lower())
-                if user:
-                    st.session_state['user'] = user
-                    st.rerun() # <--- ИСПРАВЛЕНО (БЫЛО experimental_rerun)
-                else:
-                    st.error("User not found.")
-            st.stop()
-        
-        else:
-            user = st.session_state['user']
-            st.write(f"👋 **{user['email']}**")
-            
-            if st.button("Logout"):
-                del st.session_state['user']
-                st.rerun() # <--- ИСПРАВЛЕНО
+        email_input = st.text_input("Ваш Email").strip().lower()
+        if st.button("Войти"):
+            res = supabase.table("profiles").select("*").eq("email", email_input).execute()
+            if res.data:
+                st.session_state['user'] = res.data[0]
+                st.rerun()
+            else: st.error("Пользователь не найден")
+        st.stop()
 
+    user = st.session_state['user']
+
+    with st.sidebar:
+        st.title("Sunday AI")
+        st.write(f"Аккаунт: **{user['email']}**")
+        page = st.radio("Меню", ["📊 Дайджесты", "⚙️ Настройки"])
+        st.divider()
+        if st.button("Выход"):
+            del st.session_state['user']
+            st.rerun()
+
+    if page == "⚙️ Настройки":
+        st.header("Настройки профиля")
+        
+        # Виджет личного адреса
+        st.markdown(f"""
+            <div style="background-color: rgba(46, 134, 222, 0.1); padding: 15px; border-radius: 10px; border: 1px solid #2e86de;">
+                <strong>📬 Твой персональный адрес:</strong><br>
+                <code style="font-size: 1.2rem; color: #2e86de;">{user.get('personal_email', 'не назначен')}</code>
+            </div>
+        """, unsafe_allow_html=True)
+        st.caption("Любая рассылка, отправленная на этот адрес, попадет в твой отчет.")
+
+        with st.form("settings"):
+            role = st.text_input("Роль (кто вы?)", value=user.get('role', 'Founder'))
+            focus = st.text_area("Фокусы (через запятую)", value=", ".join(user.get('focus_areas', []) or []))
+            
             st.divider()
+            st.subheader("Когда присылать отчет?")
+            c1, c2 = st.columns(2)
+            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            day = c1.selectbox("День", days, index=days.index(user.get('digest_day', 'Sunday')))
             
-            page = st.radio("Go to", ["My Briefs", "AI Settings"])
+            hours = [f"{h:02d}:00" for h in range(24)]
+            hour = c2.selectbox("Время (UTC)", hours, index=hours.index(user.get('digest_time', '09:00')[:5]))
 
-    # 2. СТРАНИЦА: НАСТРОЙКИ (AI SETTINGS)
-    if page == "AI Settings":
-        st.header("🧠 Intelligence Profile")
-        st.write("Customize how Sunday AI analyzes your inbox.")
-        
-        current_role = user.get('role', 'General User')
-        current_focus = ", ".join(user.get('focus_areas', []) or [])
-        
-        with st.form("settings_form"):
-            new_role = st.text_input("Your Role", value=current_role, help="e.g. Founder, Investor, Frontend Dev")
-            new_focus = st.text_area("Focus Areas (comma separated)", value=current_focus, help="e.g. SaaS Metrics, AI Agents, Crypto")
-            
-            submitted = st.form_submit_button("Save Changes")
-            if submitted:
-                if save_profile_settings(user['id'], new_role, new_focus):
-                    user['role'] = new_role
-                    user['focus_areas'] = [x.strip() for x in new_focus.split(",")]
-                    st.session_state['user'] = user
-                    st.rerun() # <--- ИСПРАВЛЕНО
+            if st.form_submit_button("Сохранить"):
+                save_user_settings(user['id'], role, focus, day, hour, "UTC")
 
-    # 3. СТРАНИЦА: ДАЙДЖЕСТЫ (MY BRIEFS)
-    elif page == "My Briefs":
-        digests = get_digests(user['id'])
+    elif page == "📊 Дайджесты":
+        st.header("Твои еженедельные отчеты")
+        res = supabase.table("digests").select("*").eq("user_id", user['id']).order("created_at", desc=True).execute()
         
-        if not digests:
-            st.info("📭 No briefs yet. Wait for the next Sunday!")
+        if not res.data:
+            st.info("Здесь появятся ваши первые отчеты.")
         else:
-            # ИСПРАВЛЕНИЕ: Добавляем время, чтобы видеть несколько тестов за день
-            dates = {f"{d['created_at'][:10]} ({d['created_at'][11:16]})": d for d in digests}
-            
-            selected_date = st.selectbox("Select Digest", list(dates.keys()))
-            current_digest = dates[selected_date]
-            
-            # --- ВИЗУАЛИЗАЦИЯ ОТЧЕТА ---
-            content = current_digest.get('structured_content', {})
-            
-            if not isinstance(content, dict):
-                st.warning("This is an old format digest.")
-                st.markdown(current_digest.get('summary_text', 'No content'))
-            else:
-                st.title(current_digest.get('subject', 'Weekly Brief'))
-                st.caption(f"Generated on {current_digest['created_at'][:16]}")
-                
-                # BIG PICTURE
-                if content.get('big_picture'):
+            for d in res.data:
+                date_label = d['created_at'][:10]
+                with st.expander(f"📦 Отчет за {date_label}: {d.get('subject', 'Weekly Update')}"):
+                    content = d.get('structured_content', {})
+                    
+                    # Big Picture в специальном блоке
                     st.markdown(f"""
-                        <div class="big-picture">
-                            <h3>🌍 The Big Picture</h3>
-                            {content['big_picture']}
+                        <div class="big-picture-box">
+                            <strong>🌍 Общая картина:</strong><br>
+                            {content.get('big_picture', 'Нет данных')}
                         </div>
                     """, unsafe_allow_html=True)
-                
-                # TRENDS
-                st.subheader("🔥 Key Signals & Trends")
-                
-                trends = content.get('trends', [])
-                if not trends:
-                    st.write("No major trends detected.")
                     
-                for t in trends:
-                    with st.expander(f"{t.get('title', 'Trend')}", expanded=True):
-                        st.markdown(t.get('insight', ''))
-                        
-                        indices = t.get('sources_indices', [])
-                        if indices:
-                            st.caption(f"📚 Sources: Emails {indices}")
-
-                # NOISE FILTER
-                st.divider()
-                st.markdown(f"<p class='noise-text'>🗑️ Filtered Noise: {content.get('noise_filter', 'None')}</p>", unsafe_allow_html=True)
+                    # Тренды в карточках
+                    for trend in content.get('trends', []):
+                        st.markdown(f"""
+                            <div class="digest-card">
+                                <h4>{trend.get('title', 'Тренд')}</h4>
+                                {trend.get('insight', '')}
+                            </div>
+                        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()

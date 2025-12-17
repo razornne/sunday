@@ -7,263 +7,164 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from supabase import create_client, Client
 from dotenv import load_dotenv
-from email.utils import parseaddr
-from datetime import date, datetime
+from datetime import datetime
 import markdown
 
+# Загружаем настройки
 load_dotenv()
 
-# --- CONFIGURATION ---
+# --- 1. КОНФИГУРАЦИЯ ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+# Настройки почты для отправки отчетов
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
 SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
 
+# Инициализация клиентов
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_KEY)
 
-# --- HELPER FUNCTIONS ---
+# --- 2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
-def send_telegram_alert(chat_id, text):
-    if not TG_TOKEN or not chat_id: return False
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload)
-    except: pass
-
-def send_email_report(to_email, subject, html_content):
-    if not EMAIL_USER or not EMAIL_PASS: 
-        print("⚠️ Email creds missing.")
+def send_email_report(to_email, subject, html_body):
+    """Отправляет готовый дайджест на почту юзера"""
+    if not EMAIL_USER or not EMAIL_PASS:
+        print("⚠️ Ошибка: Данные почты (SMTP) не настроены.")
         return False
     try:
         msg = MIMEMultipart()
         msg['From'] = f"Sunday AI <{EMAIL_USER}>"
         msg['To'] = to_email
         msg['Subject'] = subject
-        msg.attach(MIMEText(html_content, 'html'))
+        msg.attach(MIMEText(html_body, 'html'))
 
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.sendmail(EMAIL_USER, to_email, msg.as_string())
-        server.quit()
-        print(f"📧 Email sent to {to_email}")
+        with smtplib.SMTP(SMTP_SERVER, 587) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, to_email, msg.as_string())
         return True
     except Exception as e:
-        print(f"❌ Email Error: {e}")
+        print(f"❌ Ошибка SMTP: {e}")
         return False
 
-# --- CORE ANALYTICS ENGINE ---
-
-def synthesize_week(emails_context, user_profile):
-    model = genai.GenerativeModel("gemini-1.5-flash") 
-    
-    role = user_profile.get('role', 'General User')
-    focus = ", ".join(user_profile.get('focus_areas', []) or []) or "General Tech"
+def get_ai_synthesis(emails_text, profile):
+    """Генерирует дайджест через Gemini"""
+    model = genai.GenerativeModel("gemini-2.5-pro")
     
     prompt = f"""
-    ROLE:
-    You are an elite Chief of Staff for a user with the role: "{role}".
-    Their specific focus areas are: {focus}.
-
-    OBJECTIVE:
-    Synthesize the provided batch of emails into a high-value "Sunday Brief".
+    Твоя роль: {profile.get('role', 'Аналитик')}. 
+    Твои интересы: {profile.get('focus_areas')}.
     
-    CORE RULES:
-    1. **Signal over Noise:** Ignore marketing fluff. Focus on insights.
-    2. **Synthesis:** Combine similar topics.
-    3. **Personalization:** Explain WHY this matters for a "{role}".
-    4. **Structure:** Use Markdown.
-
-    INPUT DATA (List of emails):
-    {emails_context}
-
-    OUTPUT FORMAT (Strict JSON only):
+    ЗАДАЧА: Сделай краткий и ценный обзор следующих писем.
+    Верни строго JSON:
     {{
-        "big_picture": "One paragraph (Markdown). The overarching narrative.",
-        "trends": [
-            {{
-                "title": "Trend Title (Emoji)",
-                "insight": "Deep analysis (Markdown)",
-                "sources_indices": [1] 
-            }}
-        ],
-        "noise_filter": "List of filtered topics.",
-        "telegram_teaser": "Punchy teaser (max 400 chars)."
+      "big_picture": "одно предложение о главном за неделю",
+      "trends": [
+        {{"title": "заголовок тренда", "insight": "почему это важно для этой роли"}}
+      ],
+      "noise_filter": "что ты проигнорировал (реклама, спам)"
     }}
+
+    ПИСЬМА:
+    {emails_text}
     """
     
     try:
         response = model.generate_content(prompt)
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
+        # Очистка от markdown-обертки JSON
+        clean_json = response.text.strip().replace("```json", "").replace("```", "")
+        return json.loads(clean_json)
     except Exception as e:
-        print(f"⚠️ AI Synthesis Error: {e}")
+        print(f"⚠️ AI Error: {e}")
         return None
 
+# --- 3. ОСНОВНОЙ ПРОЦЕСС ---
+
 def main():
-    print("🚀 Starting Weekly Synthesizer (v0.2 - Personal Inbox)...")
+    # Определяем текущий момент (в UTC)
+    now = datetime.utcnow()
+    current_day = now.strftime("%A")
+    current_hour = now.strftime("%H:00")
     
-    # 1. LOAD CONFIGURATION & PROFILES
-    try:
-        # Загружаем ВСЕХ пользователей, чтобы быстро находить их по ID
-        profiles_resp = supabase.table("profiles").select("*").execute()
-        profiles_map = {p['id']: p for p in profiles_resp.data}
-        print(f"✅ Loaded {len(profiles_map)} user profiles.")
+    print(f"⏰ Проверка расписания: {current_day} {current_hour} UTC")
 
-        # Загружаем подписки (для старой логики)
-        subs_resp = supabase.table("subscriptions").select("*").eq("is_active", True).execute()
-        subs_map = {} 
-        for s in subs_resp.data:
-            key = s['sender_email'].strip().lower()
-            if key not in subs_map: subs_map[key] = []
-            subs_map[key].append(s)
-
-    except Exception as e:
-        print(f"❌ Config Loading Error: {e}")
+    # 1. Находим пользователей, которым пора отправлять отчет именно сейчас
+    users_res = supabase.table("profiles")\
+        .select("*")\
+        .eq("digest_day", current_day)\
+        .eq("digest_time", current_hour)\
+        .execute()
+    
+    active_users = users_res.data
+    if not active_users:
+        print("💤 Для этого часа запланированных отчетов нет.")
         return
 
-    # 2. COLLECT RAW EMAILS
-    raw_resp = supabase.table("raw_emails").select("*").eq("processed", False).execute()
-    raw_emails = raw_resp.data
-    
-    if not raw_emails:
-        print("💤 No new emails to process.")
-        return
+    print(f"✅ Найдено пользователей для обработки: {len(active_users)}")
 
-    user_batches = {} 
-    processed_ids = [] 
-
-    for email in raw_emails:
-        # ЛОГИКА v0.2: Прямая привязка (Direct Ownership)
-        direct_user_id = email.get('user_id')
+    for user in active_users:
+        uid = user['id']
+        email_addr = user['email']
         
-        target_users = []
-
-        if direct_user_id:
-            # Если у письма уже есть хозяин (пришло на личный адрес)
-            target_users.append({
-                "user_id": direct_user_id,
-                "trust": 10, # Личным письмам доверяем максимально
-                "alias": email.get('sender')
-            })
-        else:
-            # ЛОГИКА v0.1: Подписки (Fallback)
-            sender_raw = email.get('sender', '')
-            _, clean_email = parseaddr(sender_raw)
-            sender_key = clean_email.strip().lower()
-            subscribers = subs_map.get(sender_key, [])
-            for sub in subscribers:
-                target_users.append({
-                    "user_id": sub['user_id'],
-                    "trust": sub.get('trust_score', 5),
-                    "alias": sub.get('source_alias') or sender_key
-                })
-
-        if not target_users:
-            print(f"🗑️ Skipping orphan email {email['id']}")
-            processed_ids.append(email['id']) # Помечаем как обработанное, чтобы не висело
+        # 2. Собираем новые письма именно этого пользователя
+        emails_res = supabase.table("raw_emails")\
+            .select("*")\
+            .eq("user_id", uid)\
+            .eq("processed", False)\
+            .execute()
+        
+        new_emails = emails_res.data
+        if not new_emails:
+            print(f"📪 У {email_addr} нет новых писем. Пропускаем.")
             continue
-            
-        # Раскладываем по пачкам пользователей
-        for target in target_users:
-            uid = target['user_id']
-            if uid not in user_batches: user_batches[uid] = []
-            
-            user_batches[uid].append({
-                "index": len(user_batches[uid]) + 1,
-                "id": email['id'], 
-                "subject": email.get('subject', 'No Subject'),
-                "body": email.get('body_plain') or email.get('body_html') or "",
-                "trust": target['trust'],
-                "alias": target['alias']
-            })
-            
-        if email['id'] not in processed_ids:
-            processed_ids.append(email['id'])
 
-    # 3. SYNTHESIZE & DELIVER
-    for uid, batch in user_batches.items():
-        profile = profiles_map.get(uid)
-        if not profile: continue
-        
-        print(f"🧠 Synthesizing digest for {profile.get('email')} (Batch size: {len(batch)})...")
-        
-        context_str = ""
+        print(f"📧 Обработка {len(new_emails)} писем для {email_addr}...")
+
+        # Формируем контекст для AI
+        context = ""
         email_ids = []
-        for item in batch:
-            safe_body = item['body'][:8000] 
-            context_str += f"\n--- EMAIL #{item['index']} ---\n"
-            context_str += f"From: {item['alias']} (Trust: {item['trust']})\n"
-            context_str += f"Subject: {item['subject']}\n"
-            context_str += f"Content: {safe_body}\n"
-            email_ids.append(item['id'])
-            
-        ai_result = synthesize_week(context_str, profile)
-        
-        if not ai_result:
-            print("❌ AI Generation Failed.")
+        for e in new_emails:
+            context += f"От: {e['sender']}\nТема: {e['subject']}\nТекст: {e['body_plain'][:2000]}\n---\n"
+            email_ids.append(e['id'])
+
+        # 3. Генерируем дайджест
+        synthesis = get_ai_synthesis(context, user)
+        if not synthesis:
             continue
-            
-        # 4. SAVE & SEND
-        digest_data = {
+
+        # 4. Сохраняем и отправляем
+        digest_obj = {
             "user_id": uid,
-            "period_end": datetime.now().isoformat(),
+            "structured_content": synthesis,
             "source_email_ids": email_ids,
-            "structured_content": ai_result,
-            "subject": f"Sunday Brief: {ai_result.get('trends', [{}])[0].get('title', 'Weekly Update')}",
-            "summary_text": ai_result.get('big_picture', ''), 
-            "telegram_text": ai_result.get('telegram_teaser', ''),
-            "is_sent": True
+            "subject": f"Sunday Brief: {synthesis['big_picture'][:50]}..."
         }
         
-        try:
-            supabase.table("digests").insert(digest_data).execute()
-            print("💾 Digest saved to DB.")
-        except Exception as e:
-            print(f"❌ DB Save Error: {e}")
+        supabase.table("digests").insert(digest_obj).execute()
 
-        # Telegram
-        if profile.get('telegram_chat_id'):
-            msg = f"{ai_result.get('telegram_teaser')}\n\n🔗 [Open Dashboard](https://sunday-digest.streamlit.app)"
-            send_telegram_alert(profile.get('telegram_chat_id'), msg)
-            
-        # Email
-        if profile.get('email'):
-            trends_html = ""
-            for t in ai_result.get('trends', []):
-                refs = ", ".join([f"[{i}]" for i in t.get('sources_indices', [])])
-                trends_html += f"<h3>{t['title']} <span style='font-size:12px;color:#888'>{refs}</span></h3>"
-                trends_html += markdown.markdown(t['insight'])
-            
-            full_html = f"""
-            <html><body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6; color: #333;">
-                <div style="text-align:center; padding: 20px 0;">
-                    <h1 style="color: #2e86de; margin:0;">Sunday Brief</h1>
-                    <p style="color: #666; font-size: 14px;">One inbox in. One decision-ready brief out.</p>
-                </div>
-                <div style="background: #f9f9f9; padding: 15px; border-radius: 8px; font-style: italic; color: #555;">
-                    {ai_result.get('big_picture')}
-                </div>
-                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                {trends_html}
-                <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
-                <p style="font-size: 12px; color: #999;">Filtered Noise: {ai_result.get('noise_filter')}</p>
-            </body></html>
-            """
-            send_email_report(profile.get('email'), digest_data['subject'], full_html)
-
-    # 5. CLEANUP
-    if processed_ids:
-        for pid in processed_ids:
-            supabase.table("raw_emails").update({"processed": True}).eq("id", pid).execute()
-        print(f"🧹 Marked {len(processed_ids)} emails as processed.")
+        # HTML-письмо (дизайн совпадает с дашбордом)
+        html_report = f"""
+        <div style="font-family: sans-serif; color: #333; max-width: 600px;">
+            <h2 style="color: #2e86de;">☀️ Ваш Sunday Brief</h2>
+            <div style="background: #f0f7ff; padding: 15px; border-radius: 8px; border-left: 4px solid #2e86de;">
+                <strong>Общая картина:</strong><br>{synthesis['big_picture']}
+            </div>
+            <h3>Главные инсайты:</h3>
+            {''.join([f"<b>{t['title']}</b><p>{t['insight']}</p>" for t in synthesis['trends']])}
+            <hr>
+            <p style="font-size: 11px; color: #999;">Отфильтрованный шум: {synthesis['noise_filter']}</p>
+        </div>
+        """
+        
+        if send_email_report(email_addr, digest_obj['subject'], html_report):
+            # 5. Помечаем письма как обработанные
+            for eid in email_ids:
+                supabase.table("raw_emails").update({"processed": True}).eq("id", eid).execute()
+            print(f"🚀 Дайджест для {email_addr} успешно отправлен!")
 
 if __name__ == "__main__":
     main()

@@ -1,51 +1,34 @@
-name: Sunday AI Digest
+name: Sunday AI Hourly Automation
 
 on:
-  workflow_dispatch:      # Кнопка ручного запуска
   schedule:
-    - cron: '0 6 * * *'   # Запуск каждый день в 06:00 UTC
+    # Запуск в 0 минут каждого часа (0:00, 1:00, 2:00 и т.д. по UTC)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Позволяет запустить скрипт вручную кнопкой на GitHub
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
 
-    - name: Debug Secrets (Check if they exist)
-      run: |
-        if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
-          echo "❌ ERROR: TELEGRAM_BOT_TOKEN is empty!"
-        else
-          echo "✅ SUCCESS: TELEGRAM_BOT_TOKEN found (hidden)"
-        fi
-        
-        if [ -z "${{ secrets.EMAIL_USER }}" ]; then
-          echo "❌ ERROR: EMAIL_USER is empty!"
-        else
-          echo "✅ SUCCESS: EMAIL_USER found"
-        fi
-
-    - name: Run Summarizer
-      # Блок env должен быть на одном уровне с name и run
-      env: 
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        EMAIL_USER: ${{ secrets.EMAIL_USER }}
-        EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        SMTP_SERVER: "smtp.gmail.com"
-        SMTP_PORT: 587
-      # run должен быть после env
-      run: python summarize.py
+      - name: Run Digest Script
+        # Здесь мы передаем секреты GitHub в переменные окружения скрипта
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python weekly_digest.py
