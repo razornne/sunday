@@ -1,118 +1,155 @@
+import streamlit as st
+from supabase import create_client, Client
 import os
 import json
-import smtplib
-import google.generativeai as genai 
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from supabase import create_client, Client
 from dotenv import load_dotenv
-from datetime import datetime
+
+# --- 1. PAGE CONFIG ---
+st.set_page_config(
+    page_title="Sunday AI | Dashboard",
+    page_icon="☀️",
+    layout="wide"
+)
 
 load_dotenv()
 
-# --- CONFIG ---
-supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+# --- 2. STYLING (Dark/Light mode friendly) ---
+st.markdown("""
+    <style>
+    .digest-card {
+        padding: 1.2rem;
+        border-radius: 0.8rem;
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        margin-bottom: 1rem;
+        background-color: rgba(128, 128, 128, 0.05);
+    }
+    .big-picture-box {
+        padding: 1rem;
+        border-left: 4px solid #2e86de;
+        background-color: rgba(46, 134, 222, 0.1);
+        border-radius: 0.4rem;
+        margin-bottom: 1.5rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-def send_email_report(to_email, subject, html_body):
-    if not os.environ.get("EMAIL_USER"): return False
+# --- 3. DATABASE CONNECTION ---
+@st.cache_resource
+def init_connection():
     try:
-        msg = MIMEMultipart()
-        msg['From'] = f"Sunday AI <{os.environ.get('EMAIL_USER')}>"
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(html_body, 'html'))
-        with smtplib.SMTP(os.environ.get("SMTP_SERVER", "smtp.gmail.com"), 587) as server:
-            server.starttls()
-            server.login(os.environ.get("EMAIL_USER"), os.environ.get("EMAIL_PASS"))
-            server.sendmail(os.environ.get("EMAIL_USER"), to_email, msg.as_string())
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except:
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+    return create_client(url, key)
+
+supabase = init_connection()
+
+# --- 4. DATA LOGIC ---
+def save_user_settings(user_id, role, focus, day, hour):
+    try:
+        focus_list = [f.strip() for f in focus.split(",") if f.strip()]
+        data = {
+            "role": role,
+            "focus_areas": focus_list,
+            "digest_day": day,
+            "digest_time": hour
+        }
+        supabase.table("profiles").update(data).eq("id", user_id).execute()
+        st.success("✅ Settings updated!")
         return True
     except Exception as e:
-        print(f"SMTP Error: {e}")
+        st.error(f"Save error: {e}")
         return False
 
-def get_ai_synthesis(emails_text, profile):
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    prompt = f"""
-    ROLE: {profile.get('role', 'Professional')}. 
-    FOCUS: {profile.get('focus_areas')}.
-    
-    TASK: Synthesize the following emails into a high-value weekly brief.
-    Return STRICT JSON:
-    {{
-      "big_picture": "one sentence overarching summary",
-      "trends": [
-        {{"title": "trend heading", "insight": "why this matters for the user's role"}}
-      ],
-      "noise_filter": "topics ignored as fluff"
-    }}
-
-    EMAILS:
-    {emails_text}
-    """
-    try:
-        response = model.generate_content(prompt)
-        text = response.text.strip().replace("```json", "").replace("```", "")
-        return json.loads(text)
-    except: return None
-
+# --- 5. MAIN APP ---
 def main():
-    now = datetime.utcnow()
-    current_day = now.strftime("%A")
-    current_hour = now.strftime("%H:00")
-    
-    print(f"⏰ Checking schedule for: {current_day} {current_hour} UTC")
+    if 'user' not in st.session_state:
+        st.title("☀️ Sunday AI")
+        email_input = st.text_input("Enter your Email").strip().lower()
+        if st.button("Login"):
+            res = supabase.table("profiles").select("*").eq("email", email_input).execute()
+            if res.data:
+                st.session_state['user'] = res.data[0]
+                st.rerun()
+            else:
+                st.error("User not found.")
+        st.stop()
 
-    users_res = supabase.table("profiles").select("*").eq("digest_day", current_day).execute()
-    
-    if not users_res.data:
-        print("💤 No users scheduled for today.")
-        return
+    user = st.session_state['user']
 
-    for user in users_res.data:
-        user_time = user.get('digest_time', '09:00')[:5]
-        if user_time != current_hour[:5]:
-            continue
+    with st.sidebar:
+        st.title("Sunday AI")
+        st.write(f"Logged in: **{user['email']}**")
+        page = st.radio("Navigation", ["📊 My Briefs", "⚙️ AI Settings"])
+        st.divider()
+        if st.button("Logout"):
+            del st.session_state['user']
+            st.rerun()
 
-        uid = user['id']
-        emails_res = supabase.table("raw_emails").select("*").eq("user_id", uid).eq("processed", False).execute()
+    # PAGE: SETTINGS
+    if page == "⚙️ AI Settings":
+        st.header("Intelligence & Schedule")
         
-        if not emails_res.data:
-            print(f"📪 No new mail for {user['email']}")
-            continue
+        st.info(f"📬 **Your Personal Sunday Email:** `{user.get('personal_email', 'not-assigned')}`")
 
-        context = ""
-        email_ids = []
-        for e in emails_res.data:
-            context += f"From: {e['sender']}\nSubj: {e['subject']}\nText: {e['body_plain'][:1500]}\n---\n"
-            email_ids.append(e['id'])
+        with st.form("settings_form"):
+            role = st.text_input("Your Professional Role", value=user.get('role', 'Founder'))
+            focus = st.text_area("Focus Areas (comma separated)", value=", ".join(user.get('focus_areas', []) or []))
+            
+            st.divider()
+            st.subheader("Delivery Schedule (UTC)")
+            c1, c2 = st.columns(2)
+            
+            # SAFE INDEX LOGIC
+            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            db_day = user.get('digest_day', 'Sunday')
+            day_idx = days.index(db_day) if db_day in days else 6
+            
+            day = c1.selectbox("Preferred Day", days, index=day_idx)
+            
+            hours = [f"{h:02d}:00" for h in range(24)]
+            db_time = str(user.get('digest_time', '09:00'))[:5]
+            time_idx = hours.index(db_time) if db_time in hours else 9
+            
+            hour = c2.selectbox("Delivery Hour", hours, index=time_idx)
 
-        synthesis = get_ai_synthesis(context, user)
-        if synthesis:
-            digest_obj = {
-                "user_id": uid,
-                "structured_content": synthesis,
-                "source_email_ids": email_ids,
-                "subject": f"Sunday Brief: {synthesis['big_picture'][:50]}..."
-            }
-            supabase.table("digests").insert(digest_obj).execute()
+            # THE SUBMIT BUTTON
+            if st.form_submit_button("Save Settings"):
+                if save_user_settings(user['id'], role, focus, day, hour):
+                    user.update({"role": role, "digest_day": day, "digest_time": hour})
+                    st.session_state['user'] = user
 
-            html_report = f"""
-            <div style="font-family: sans-serif; color: #333; max-width: 600px;">
-                <h2 style="color: #2e86de;">☀️ Your Sunday Brief</h2>
-                <div style="background: #f0f7ff; padding: 15px; border-radius: 8px; border-left: 4px solid #2e86de;">
-                    <strong>Big Picture:</strong><br>{synthesis['big_picture']}
-                </div>
-                <h3>Key Trends & Insights:</h3>
-                {''.join([f"<b>{t['title']}</b><p>{t['insight']}</p>" for t in synthesis['trends']])}
-                <hr>
-                <p style="font-size: 11px; color: #999;">Noise Filtered: {synthesis['noise_filter']}</p>
-            </div>
-            """
-            if send_email_report(user['email'], digest_obj['subject'], html_report):
-                for eid in email_ids:
-                    supabase.table("raw_emails").update({"processed": True}).eq("id", eid).execute()
-                print(f"🚀 Brief sent to {user['email']}")
+    # PAGE: BRIEFS
+    elif page == "📊 My Briefs":
+        st.header("Your Weekly Reports")
+        res = supabase.table("digests").select("*").eq("user_id", user['id']).order("created_at", desc=True).execute()
+        
+        if not res.data:
+            st.info("No reports yet. Forward some emails and wait for your scheduled time!")
+        else:
+            for d in res.data:
+                with st.expander(f"📦 Brief from {d['created_at'][:10]}: {d.get('subject', 'Update')}"):
+                    content = d.get('structured_content', {})
+                    if isinstance(content, str):
+                        try: content = json.loads(content)
+                        except: st.write(content); continue
+
+                    st.markdown(f"""
+                        <div class="big-picture-box">
+                            <strong>🌍 The Big Picture:</strong><br>
+                            {content.get('big_picture', 'No summary')}
+                        </div>
+                    """, unsafe_allow_html=True)
+                    
+                    for trend in content.get('trends', []):
+                        st.markdown(f"""
+                            <div class="digest-card">
+                                <h4 style="color:#2e86de; margin:0;">{trend.get('title', 'Trend')}</h4>
+                                <p>{trend.get('insight', '')}</p>
+                            </div>
+                        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
