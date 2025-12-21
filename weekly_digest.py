@@ -2,6 +2,7 @@ import os
 import json
 import smtplib
 from google import genai
+from google.genai import types # Добавили для типов данных
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from supabase import create_client, Client
@@ -12,7 +13,7 @@ load_dotenv()
 
 # --- INITIALIZATION ---
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
-# Инициализация нового клиента Google AI
+# Явно указываем клиент для Gemini API
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def send_email(to_email, subject, html_body):
@@ -28,7 +29,7 @@ def send_email(to_email, subject, html_body):
             server.sendmail(os.environ.get("EMAIL_USER"), to_email, msg.as_string())
         return True
     except Exception as e:
-        print(f"❌ SMTP Error: {e}")
+        print(f"   ❌ SMTP Error: {e}")
         return False
 
 def get_ai_synthesis(emails_text, profile):
@@ -37,101 +38,99 @@ def get_ai_synthesis(emails_text, profile):
     
     prompt = f"""
     ROLE: Elite Strategy Consultant for a "{role}".
-    FOCUS: {focus}.
+    THEIR FOCUS: {focus}.
     TASK: Synthesize these emails into a JSON "Sunday Brief".
-    FORMAT: {{ "big_picture": "...", "trends": [{{ "title": "...", "insight": "..." }}], "noise_filter": "..." }}
-    EMAILS: {emails_text}
+    
+    OUTPUT STRUCTURE (Strict JSON):
+    {{
+      "big_picture": "Summary of the week in 2 sentences.",
+      "trends": [
+        {{ "title": "Topic with Emoji", "insight": "Strategic analysis (use **bold** for keywords)" }}
+      ],
+      "noise_filter": "What fluff was ignored."
+    }}
+
+    EMAIL DATA:
+    {emails_text}
     """
     
     try:
-        # Новый метод вызова Gemini 1.5 Flash
+        # ИСПОЛЬЗУЕМ БОЛЕЕ СТАБИЛЬНОЕ ИМЯ МОДЕЛИ
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-3-flash-preview", 
             contents=prompt,
-            config={'response_mime_type': 'application/json'}
+            config=types.GenerateContentConfig(
+                response_mime_type='application/json'
+            )
         )
+        # В новой библиотеке ответ лежит в .text или .parsed
         return json.loads(response.text)
     except Exception as e:
-        print(f"❌ AI Error: {e}")
+        print(f"   ❌ AI Synthesis Error: {e}")
         return None
 
 def get_html_template(synthesis):
     trends_html = "".join([f"""
-        <div style="margin-bottom: 20px; padding: 15px; border-radius: 10px; border: 1px solid #eef2f6; background-color: #ffffff;">
-            <h3 style="margin: 0 0 8px 0; color: #1a73e8; font-size: 16px;">{t['title']}</h3>
-            <div style="color: #3c4043; font-size: 14px; line-height: 1.5;">{t['insight']}</div>
+        <div style="margin-bottom: 20px; padding: 18px; border-radius: 12px; border: 1px solid #e8eaed; background-color: #ffffff;">
+            <h3 style="margin: 0 0 10px 0; color: #1a73e8; font-size: 17px; font-weight: 600;">{t['title']}</h3>
+            <div style="color: #3c4043; font-size: 14px; line-height: 1.6;">{t['insight']}</div>
         </div>
     """ for t in synthesis.get('trends', [])])
 
     return f"""
-    <html>
-    <body style="font-family: sans-serif; background-color: #f8f9fa; padding: 20px;">
-        <div style="max-width: 600px; margin: auto; background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05);">
-            <div style="background: #1a73e8; color: white; padding: 25px; text-align: center;">
-                <h1 style="margin: 0; font-size: 22px;">☀️ Sunday AI Brief</h1>
+    <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; padding: 20px; color: #202124;">
+        <div style="max-width: 600px; margin: auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+            <div style="background: #1a73e8; color: white; padding: 30px; text-align: center;">
+                <h1 style="margin: 0; font-size: 24px; font-weight: 400;">☀️ Sunday AI</h1>
             </div>
-            <div style="padding: 25px;">
-                <div style="background: #f0f7ff; border-left: 4px solid #1a73e8; padding: 15px; margin-bottom: 25px;">
-                    <strong style="color: #1a73e8;">The Big Picture:</strong><br>
-                    <span style="font-size: 15px;">{synthesis.get('big_picture')}</span>
+            <div style="padding: 30px;">
+                <div style="background: #e8f0fe; border-left: 4px solid #1a73e8; padding: 20px; border-radius: 4px; margin-bottom: 30px;">
+                    <h2 style="margin: 0 0 10px 0; font-size: 14px; color: #1a73e8; text-transform: uppercase; letter-spacing: 1px;">The Big Picture</h2>
+                    <p style="margin: 0; font-size: 16px; line-height: 1.5; font-weight: 500;">{synthesis.get('big_picture')}</p>
                 </div>
                 {trends_html}
             </div>
-            <div style="background: #f1f3f4; padding: 15px; text-align: center; font-size: 11px; color: #70757a;">
-                Noise Filtered: {synthesis.get('noise_filter')} | © 2025 Sunday AI
+            <div style="background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #70757a; border-top: 1px solid #e8eaed;">
+                <strong>Noise Filter:</strong> {synthesis.get('noise_filter')}
             </div>
         </div>
-    </body>
-    </html>
+    </div>
     """
 
 def main():
     now = datetime.utcnow()
     cur_day, cur_hour = now.strftime("%A"), now.strftime("%H:00")
-    print(f"🚀 Sunday AI Engine Started | Day: {cur_day} | Time: {cur_hour} UTC")
+    print(f"🚀 Sunday AI Run | {cur_day} {cur_hour} UTC")
 
-    # 1. Загружаем всех пользователей на текущий день
     users = supabase.table("profiles").select("*").eq("digest_day", cur_day).execute()
     
-    if not users.data:
-        print(f"💤 No users scheduled for {cur_day}.")
-        return
-
     for user in users.data:
         user_sched = user.get('digest_time', '09:00')[:5]
-        
-        # ЛОГ: Показываем, кого проверяем
-        print(f"👤 Checking user: {user['email']} (Scheduled: {user_sched})")
+        print(f"👤 User: {user['email']} (Sched: {user_sched})")
         
         if user_sched != cur_hour[:5]:
-            print(f"   ⏩ Skipping: Not time yet.")
+            print(f"   ⏩ Skip.")
             continue
             
-        # 2. Ищем новые письма
         emails = supabase.table("raw_emails").select("*").eq("user_id", user['id']).eq("processed", False).execute()
         
         if not emails.data:
-            print(f"   📪 No new emails to process.")
+            print(f"   📪 No new emails.")
             continue
 
-        print(f"   📨 Processing {len(emails.data)} emails...")
+        print(f"   📨 Processing {len(emails.data)} items...")
+        context = "\n".join([f"SENDER: {e['sender']}\nSUBJECT: {e['subject']}\nCONTENT: {e['body_plain'][:1000]}\n---" for e in emails.data])
 
-        context = "\n".join([f"SOURCE: {e['sender']}\nSUBJECT: {e['subject']}\nCONTENT: {e['body_plain'][:1500]}\n---" for e in emails.data])
-
-        # 3. Синтез и отправка
         synthesis = get_ai_synthesis(context, user)
         if synthesis:
             html_body = get_html_template(synthesis)
-            subject = f"Sunday Brief: {synthesis['big_picture'][:45]}..."
+            subject = f"Sunday Brief: {synthesis['big_picture'][:50]}..."
             
             if send_email(user['email'], subject, html_body):
-                # История и пометка об обработке
                 supabase.table("digests").insert({"user_id": user['id'], "structured_content": synthesis, "subject": subject}).execute()
                 for e in emails.data:
                     supabase.table("raw_emails").update({"processed": True}).eq("id", e['id']).execute()
-                print(f"   ✅ Brief delivered!")
-            else:
-                print(f"   ❌ Email delivery failed.")
+                print(f"   ✅ Delivered.")
 
 if __name__ == "__main__":
     main()
