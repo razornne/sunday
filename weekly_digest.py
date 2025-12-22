@@ -66,7 +66,7 @@ def get_ai_synthesis(emails_text, profile):
     try:
         # ПЕРЕДАЕМ CONFIG КАК ОБЫЧНЫЙ СЛОВАРЬ
         response = client.models.generate_content(
-            model="gemini-1.5-flash", 
+            model="gemini-3-flash-preview", 
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
