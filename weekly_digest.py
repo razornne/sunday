@@ -3,24 +3,24 @@ import json
 import smtplib
 from datetime import datetime
 from dotenv import load_dotenv
-from google import genai
+from google import genai  # Импортируем только основной клиент
 from supabase import create_client, Client
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# Загрузка переменных окружения
+# Загрузка переменных
 load_dotenv()
 
-# --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТОВ ---
+# --- ИНИЦИАЛИЗАЦИЯ ---
 supabase: Client = create_client(
     os.environ.get("SUPABASE_URL"), 
     os.environ.get("SUPABASE_KEY")
 )
 
+# Инициализация Gemini без использования подмодуля types
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def send_email(to_email, subject, html_body):
-    """Отправка письма через SMTP"""
     try:
         msg = MIMEMultipart()
         msg['From'] = f"Sunday AI <{os.environ.get('EMAIL_USER')}>"
@@ -38,7 +38,10 @@ def send_email(to_email, subject, html_body):
         return False
 
 def get_ai_synthesis(emails_text, profile):
-    """Генерация аналитики через Gemini 1.5 Flash"""
+    """
+    Генерация аналитики. 
+    ВНИМАНИЕ: Здесь мы НЕ используем слово 'types', чтобы избежать NameError.
+    """
     role = profile.get('role', 'Professional')
     focus = ", ".join(profile.get('focus_areas', []))
     
@@ -51,7 +54,7 @@ def get_ai_synthesis(emails_text, profile):
     {{
       "big_picture": "Summary of the week in 2 sentences.",
       "trends": [
-        {{ "title": "Topic with Emoji", "insight": "Strategic analysis (use **bold** for keywords)" }}
+        {{ "title": "Topic with Emoji", "insight": "Strategic analysis" }}
       ],
       "noise_filter": "What fluff was ignored."
     }}
@@ -61,9 +64,9 @@ def get_ai_synthesis(emails_text, profile):
     """
     
     try:
-        # Используем словарь для конфига, чтобы избежать ошибок импорта types
+        # ПЕРЕДАЕМ CONFIG КАК ОБЫЧНЫЙ СЛОВАРЬ
         response = client.models.generate_content(
-            model="gemini-3-flash-preview", 
+            model="gemini-1.5-flash", 
             contents=prompt,
             config={
                 'response_mime_type': 'application/json',
@@ -76,7 +79,6 @@ def get_ai_synthesis(emails_text, profile):
         return None
 
 def get_html_template(synthesis):
-    """Красивый HTML-шаблон для письма"""
     trends_html = "".join([f"""
         <div style="margin-bottom: 24px; padding: 20px; border-radius: 12px; border: 1px solid #eef2f6; background-color: #ffffff;">
             <h3 style="margin: 0 0 10px 0; color: #1a73e8; font-size: 18px; font-weight: 600;">{t['title']}</h3>
@@ -106,64 +108,52 @@ def get_html_template(synthesis):
 
 def main():
     now = datetime.utcnow()
+    # Получаем текущий день и час (например, "Monday" и "14:00")
     cur_day, cur_hour = now.strftime("%A"), now.strftime("%H:00")
     print(f"🚀 Sunday AI Run | {cur_day} {cur_hour} UTC")
 
-    # 1. Получаем пользователей, у которых сегодня день дайджеста
+    # 1. Берем всех пользователей на текущий день
     users = supabase.table("profiles").select("*").eq("digest_day", cur_day).execute()
     
-    if not users.data:
-        print(f"💤 No users scheduled for {cur_day}.")
-        return
-
     for user in users.data:
         user_sched = user.get('digest_time', '09:00')[:5]
         print(f"👤 User: {user['email']} (Sched: {user_sched})")
         
-        # 2. Проверка времени (строгое соответствие часа)
+        # 2. Проверка времени
         if user_sched != cur_hour:
-            print(f"   ⏩ Skipping (Wait for {user_sched})")
+            print(f"   ⏩ Skipping (Current: {cur_hour}, Target: {user_sched})")
             continue
             
-        # 3. Получаем только необработанные письма этого пользователя
+        # 3. Берем письма
         emails = supabase.table("raw_emails").select("*").eq("user_id", user['id']).eq("processed", False).execute()
         
         if not emails.data:
-            print(f"   📪 No new emails to process.")
+            print(f"   📪 No emails.")
             continue
 
         print(f"   📨 Synthesizing {len(emails.data)} emails...")
-        
-        # Склеиваем текст писем для ИИ
         context = ""
         for e in emails.data:
             context += f"SENDER: {e['sender']}\nSUBJECT: {e['subject']}\nCONTENT: {e['body_plain'][:1000]}\n---\n"
 
-        # 4. Анализ через Gemini
+        # 4. Анализ
         synthesis = get_ai_synthesis(context, user)
         
         if synthesis:
             html_body = get_html_template(synthesis)
             subject = f"Sunday Brief: {synthesis['big_picture'][:50]}..."
             
-            # 5. Отправка и сохранение результата
             if send_email(user['email'], subject, html_body):
-                # Записываем дайджест в БД
+                # 5. Сохранение и статус
                 supabase.table("digests").insert({
                     "user_id": user['id'], 
                     "structured_content": synthesis, 
                     "subject": subject
                 }).execute()
                 
-                # Помечаем письма как обработанные
                 for e in emails.data:
                     supabase.table("raw_emails").update({"processed": True}).eq("id", e['id']).execute()
-                    
-                print(f"   ✅ Success: Delivered and updated.")
-            else:
-                print(f"   ❌ Failed: Email delivery error.")
-        else:
-            print(f"   ❌ Failed: AI synthesis failed.")
+                print(f"   ✅ Delivered.")
 
 if __name__ == "__main__":
     main()
