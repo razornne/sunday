@@ -1,0 +1,34 @@
+name: Sunday AI Hourly Automation
+
+on:
+  schedule:
+    # Запуск в 0 минут каждого часа (0:00, 1:00, 2:00 и т.д. по UTC)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Позволяет запустить скрипт вручную кнопкой на GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Digest Script
+        # Здесь мы передаем секреты GitHub в переменные окружения скрипта
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python weekly_digest.py
