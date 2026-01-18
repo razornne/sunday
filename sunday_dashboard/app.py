@@ -5,6 +5,9 @@ from supabase import create_client
 import os
 from dotenv import load_dotenv
 import pandas as pd
+import uuid
+from datetime import datetime, timedelta
+import extra_streamlit_components as stx # Библиотека для куки
 
 # 1. Config & Styles
 st.set_page_config(page_title="Sunday AI", page_icon="☕", layout="wide")
@@ -58,21 +61,7 @@ st.markdown("""
         font-weight: 500;
     }
 
-    /* Inbox Address Box (Зеленый) */
-    .inbox-box {
-        background-color: #f0fdf4; 
-        border: 1px solid #bbf7d0; 
-        padding: 24px; 
-        border-radius: 12px; 
-        margin-bottom: 30px; 
-        text-align: center;
-    }
-    .inbox-label {
-        color: #166534; font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;
-    }
-    .inbox-value {
-        color: #15803d; font-size: 24px; font-family: monospace; font-weight: 700; cursor: pointer;
-    }
+    /* Inbox Address Box (Зеленый контейнер убрали, заменили на st.code для копирования) */
 </style>
 """, unsafe_allow_html=True)
 
@@ -90,8 +79,14 @@ supabase = init_connection()
 
 # --- HELPERS ---
 def get_user_uuid(email):
+    """Ищет пользователя по личному email ИЛИ по сгенерированному (@sundayai.dev)"""
     try:
-        response = supabase.table("profiles").select("id").eq("personal_email", email).execute()
+        email = email.strip().lower() # Очистка ввода
+        # Синтаксис Supabase: Ищем совпадение в personal_email ИЛИ inbox_email
+        response = supabase.table("profiles").select("id") \
+            .or_(f"personal_email.eq.{email},inbox_email.eq.{email}") \
+            .execute()
+        
         if response.data: return response.data[0]['id']
         return None
     except: return None
@@ -118,80 +113,112 @@ def update_user_profile(user_uuid, updates):
         return False
     
 def create_user_profile(email):
-    """Создает нового пользователя. Триггер в базе сам сгенерирует inbox_email."""
+    """Создает нового пользователя. ID генерируем сами."""
     try:
-        # Проверяем, есть ли уже такой
+        # 1. Генерируем ID
+        new_id = str(uuid.uuid4())
+        
+        # 2. Проверяем дубликат
         existing = get_user_uuid(email)
         if existing:
             return None, "User already exists. Please login."
             
-        # Создаем
-        data = {"personal_email": email, "role": "Founder", "focus_areas": ["General Tech"]}
-        response = supabase.table("profiles").insert(data).execute()
+        # 3. Создаем
+        data = {
+            "id": new_id,
+            "personal_email": email, 
+            "role": "Founder", 
+            "focus_areas": ["General Tech"]
+        }
+        supabase.table("profiles").insert(data).execute()
         
-        if response.data:
-            return response.data[0]['id'], None
-        return None, "Database error."
+        return new_id, None
     except Exception as e:
         return None, str(e)
 
 # --- MAIN APP ---
 def main():
+    # 1. МЕНЕДЖЕР КУКИ (Cookies)
+    # Позволяет не входить каждый раз
+    cookie_manager = stx.CookieManager()
+    
+    # Инициализация сессии
     if 'user_email' not in st.session_state: st.session_state.user_email = None
     if 'user_uuid' not in st.session_state: st.session_state.user_uuid = None
+
+    # ПРОВЕРКА КУКИ ПРИ ЗАГРУЗКЕ
+    # Если в сессии пусто, пытаемся достать из браузера
+    if not st.session_state.user_uuid:
+        cookie_uuid = cookie_manager.get('sunday_user_uuid')
+        if cookie_uuid:
+            # Проверяем, жив ли юзер в базе
+            prof = get_user_profile(cookie_uuid)
+            if prof:
+                st.session_state.user_uuid = cookie_uuid
+                st.session_state.user_email = prof.get('personal_email')
+                # st.rerun() # Иногда нужен реран, но попробуем без него для скорости
 
     with st.sidebar:
         st.title("Sunday AI ☕")
         
-        # Если пользователь НЕ залогинен
+        # --- ЛОГИН / РЕГИСТРАЦИЯ ---
         if not st.session_state.user_email:
-            # Переключатель: Вход или Регистрация
             mode = st.radio("Auth Mode", ["Sign In", "Sign Up"], label_visibility="collapsed")
             st.divider()
             
-            email_input = st.text_input("Your Email", placeholder="name@example.com")
+            email_input = st.text_input("Email", placeholder="you@example.com")
             
             if mode == "Sign In":
                 if st.button("Log In", type="primary", use_container_width=True):
                     if not email_input:
                         st.warning("Please enter email.")
                     else:
-                        uuid = get_user_uuid(email_input)
-                        if uuid:
+                        uuid_found = get_user_uuid(email_input)
+                        if uuid_found:
+                            # Успешный вход
                             st.session_state.user_email = email_input
-                            st.session_state.user_uuid = uuid
+                            st.session_state.user_uuid = uuid_found
+                            
+                            # СОХРАНЯЕМ КУКИ (30 дней)
+                            cookie_manager.set('sunday_user_uuid', uuid_found, expires_at=datetime.now() + timedelta(days=30))
+                            
+                            st.success("Welcome back!")
                             st.rerun()
                         else:
-                            st.error("User not found. Please Sign Up.")
+                            st.error("User not found.")
                             
             elif mode == "Sign Up":
                 if st.button("Create Account", type="primary", use_container_width=True):
                     if not email_input:
                         st.warning("Please enter email.")
                     else:
-                        # Создаем юзера
                         new_uuid, error = create_user_profile(email_input)
                         if new_uuid:
-                            st.success("Account created!")
-                            # Авто-вход
+                            # Успешная регистрация
                             st.session_state.user_email = email_input
                             st.session_state.user_uuid = new_uuid
+                            
+                            # СОХРАНЯЕМ КУКИ
+                            cookie_manager.set('sunday_user_uuid', new_uuid, expires_at=datetime.now() + timedelta(days=30))
+                            
+                            st.success("Account created!")
                             st.rerun()
                         else:
                             st.error(f"Error: {error}")
             
-            st.stop() # Останавливаем рендер основного контента, пока нет логина
+            st.stop() # Не показываем контент незалогиненным
             
-        # Если пользователь ЗАЛОГИНЕН
+        # --- МЕНЮ (ЕСЛИ ЗАЛОГИНЕН) ---
         else:
             st.caption(f"👤 {st.session_state.user_email}")
             st.divider()
             
-            # Меню навигации
             page = st.radio("Menu", ["My Briefs", "Settings"], label_visibility="collapsed")
             
             st.divider()
             if st.button("Sign Out", use_container_width=True):
+                # Удаляем куки и сессию
+                cookie_manager.delete('sunday_user_uuid')
                 st.session_state.user_email = None
                 st.session_state.user_uuid = None
                 st.rerun()
@@ -231,7 +258,7 @@ def main():
             elif isinstance(raw_data, list):
                 trends = raw_data
 
-            big_picture = brief.get('summary_text')
+            big_picture = brief.get('summary_text') or brief.get('big_picture')
 
             # Rendering
             if big_picture:
@@ -279,18 +306,17 @@ def main():
         if not profile:
             st.error("Profile not found.")
         else:
-            # 1. PERSONAL INBOX BOX
-            inbox_email = profile.get('inbox_email') or "Not Generated"
+            # 1. PERSONAL INBOX (НОВЫЙ БЛОК С КОПИРОВАНИЕМ)
+            inbox_email = profile.get('inbox_email') or "Generating..."
             
-            st.markdown(f"""
-            <div class="inbox-box">
-                <div class="inbox-label">Your Personal Sunday Inbox</div>
-                <div class="inbox-value">{inbox_email}</div>
-                <div style="color: #166534; font-size: 14px; margin-top: 8px;">
-                    Forward newsletters here to populate your feed.
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### 📬 Your Sunday Inbox")
+            st.info("Forward your newsletters to this address:")
+            
+            # st.code создает красивое поле с кнопкой копирования справа
+            st.code(inbox_email, language="text")
+            
+            st.caption("Tip: Add this address to your Gmail auto-forwarding rules.")
+            st.divider()
 
             # 2. AI PERSONA CONFIG
             with st.container():
@@ -309,7 +335,7 @@ def main():
                             help="E.g. VC Investor, Engineer. Defines the report's tone."
                         )
                         
-                        # Day (Visual only for now)
+                        # Day
                         current_day = profile.get('digest_day') or "Sunday"
                         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                         try: idx = days.index(current_day)
@@ -329,7 +355,7 @@ def main():
                             help="E.g. SaaS, Defense Tech, Crypto. The AI will prioritize these."
                         )
                         
-                        # Time (Visual only for now)
+                        # Time
                         current_time = profile.get('digest_time') or "09:00"
                         new_time = st.time_input("Delivery Time (UTC)", value=pd.to_datetime(str(current_time)).time())
 
