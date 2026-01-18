@@ -217,8 +217,13 @@ def main():
             
             st.divider()
             if st.button("Sign Out", use_container_width=True):
-                # Удаляем куки и сессию
-                cookie_manager.delete('sunday_user_uuid')
+                # Безопасное удаление куки
+                try:
+                    cookie_manager.delete('sunday_user_uuid')
+                except KeyError:
+                    pass # Куки уже нет или она не найдена, это нормально
+                
+                # Очистка сессии
                 st.session_state.user_email = None
                 st.session_state.user_uuid = None
                 st.rerun()
