@@ -311,17 +311,29 @@ def main():
         if not profile:
             st.error("Profile not found.")
         else:
-            # 1. PERSONAL INBOX (НОВЫЙ БЛОК С КОПИРОВАНИЕМ)
+            # 1. PERSONAL INBOX
             inbox_email = profile.get('inbox_email') or "Generating..."
             
             st.markdown("### 📬 Your Sunday Inbox")
             st.info("Forward your newsletters to this address:")
             
-            # st.code создает красивое поле с кнопкой копирования справа
+            # Поле для копирования
             st.code(inbox_email, language="text")
             
-            st.caption("Tip: Add this address to your Gmail auto-forwarding rules.")
+            # === НОВАЯ ССЫЛКА ЗДЕСЬ ===
+            st.markdown("""
+            <div style="margin-top: -10px; margin-bottom: 20px; font-size: 14px;">
+                <a href="https://support.google.com/mail/answer/10957?hl=ru" target="_blank" style="text-decoration: none; color: #2563eb;">
+                    📚 How to set up auto-forwarding in Gmail →
+                </a>
+            </div>
+            """, unsafe_allow_html=True)
+            # ==========================
+            
             st.divider()
+
+            # 2. AI PERSONA CONFIG
+            # (дальше код остается без изменений...)
 
             # 2. AI PERSONA CONFIG
             with st.container():
