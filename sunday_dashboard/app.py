@@ -106,18 +106,29 @@ def update_user_profile(user_uuid, updates):
     except Exception as e: st.error(f"Error: {e}"); return False
 
 def create_user_profile(email):
+    """Создает пользователя И генерирует ему адрес для пересылки"""
     try:
         new_id = str(uuid.uuid4())
         existing = get_user_uuid(email)
         if existing: return None, "User exists. Please login."
-        data = {"id": new_id, "personal_email": email, "role": "Founder", "focus_areas": ["General Tech"]}
+        
+        # Генерируем уникальный inbox (берем первые 8 символов ID)
+        inbox_email = f"{new_id[:8]}@sundayai.dev"
+        
+        data = {
+            "id": new_id, 
+            "personal_email": email, 
+            "inbox_email": inbox_email, # <--- ВАЖНО: Сразу сохраняем
+            "role": "Founder", 
+            "focus_areas": ["General Tech"]
+        }
         supabase.table("profiles").insert(data).execute()
         return new_id, None
     except Exception as e: return None, str(e)
 
 # --- DEMO HELPER ---
 def get_live_demo_data():
-    # 👇👇👇 ПРОВЕРЬ UUID 👇👇👇
+    # 👇👇👇 ВСТАВЬ СЮДА СВОЙ UUID (АДМИНА) 👇👇👇
     ADMIN_UUID = "aa1a97d8-a102-4945-9390-239a6b6c5d68" 
     try:
         response = supabase.table("digests").select("*").eq("user_id", ADMIN_UUID).order("period_start", desc=True).limit(1).execute()
@@ -139,11 +150,10 @@ def main():
     if 'user_email' not in st.session_state: st.session_state.user_email = None
     if 'user_uuid' not in st.session_state: st.session_state.user_uuid = None
     if 'demo_mode' not in st.session_state: st.session_state.demo_mode = False
-    # 👇 НОВОЕ: Флаг "Хочу регистрации"
     if 'signup_mode' not in st.session_state: st.session_state.signup_mode = False 
 
-    # Auto-Login
-    if not st.session_state.user_uuid and not st.session_state.demo_mode:
+    # Auto-Login (только если не Демо и не Режим регистрации)
+    if not st.session_state.user_uuid and not st.session_state.demo_mode and not st.session_state.signup_mode:
         cookie_uuid = cookie_manager.get('sunday_user_uuid')
         if cookie_uuid:
             prof = get_user_profile(cookie_uuid)
@@ -151,25 +161,22 @@ def main():
                 st.session_state.user_uuid = cookie_uuid
                 st.session_state.user_email = prof.get('personal_email')
 
-    # === SIDEBAR (ВСЕГДА ДОСТУПЕН) ===
+    # === SIDEBAR ===
     with st.sidebar:
         st.title("Sunday AI ☕")
         
-        # Если не залогинен, показываем мини-форму или кнопку демо
+        # Сценарий 1: НЕ залогинен
         if not st.session_state.user_email and not st.session_state.demo_mode:
             if st.button("👀 See Live Demo", type="secondary", use_container_width=True, key="sb_demo_btn"):
                 st.session_state.demo_mode = True
                 st.session_state.signup_mode = False
                 st.rerun()
-            
             st.divider()
-            st.caption("Quick Access")
-            # Если нажали в сайдбаре - тоже кидаем на форму регистрации в центр
             if st.button("Log In / Sign Up", use_container_width=True):
                  st.session_state.signup_mode = True
                  st.rerun()
 
-        # Если залогинен
+        # Сценарий 2: Залогинен
         elif st.session_state.user_email:
             st.caption(f"👤 {st.session_state.user_email}")
             if st.button("Sign Out", use_container_width=True):
@@ -180,7 +187,7 @@ def main():
                 st.rerun()
             st.divider()
             
-        # Если Демо
+        # Сценарий 3: Демо
         elif st.session_state.demo_mode:
             st.warning("👀 DEMO MODE")
             if st.button("Exit Demo", use_container_width=True, key="sb_exit"):
@@ -188,120 +195,111 @@ def main():
                 st.session_state.signup_mode = False
                 st.rerun()
 
-        # Меню навигации (только если залогинен)
-        if st.session_state.user_email:
+        # МЕНЮ НАВИГАЦИИ (Видно всегда, если есть доступ к контенту)
+        if st.session_state.user_email or st.session_state.demo_mode:
              page = st.radio("Menu", ["My Briefs", "Settings"], label_visibility="collapsed")
-        elif st.session_state.demo_mode:
-             page = "My Briefs"
         else:
              page = "Welcome"
 
-    # === ЛОГИКА ГЛАВНОГО ЭКРАНА ===
+    # === CONTENT LOGIC ===
 
-    # 1. ДЕМО РЕЖИМ
+    # 1. ДЕМО ПЛАШКА
     if st.session_state.demo_mode:
         st.info("👀 You are viewing a Live Demo.")
-        
-        col_nav1, col_nav2 = st.columns(2)
-        with col_nav1:
-            # 👇 ТЕПЕРЬ ВКЛЮЧАЕТ РЕЖИМ РЕГИСТРАЦИИ
-            if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="nav_signup"):
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="demo_nav_signup"):
                 st.session_state.demo_mode = False
-                st.session_state.signup_mode = True # <-- ВАЖНО
+                st.session_state.signup_mode = True 
                 st.rerun()
-        with col_nav2:
-            if st.button("Exit Demo", use_container_width=True, key="nav_exit"):
+        with c2:
+            if st.button("Exit Demo", use_container_width=True, key="demo_nav_exit"):
                 st.session_state.demo_mode = False
                 st.session_state.signup_mode = False
                 st.rerun()
         st.divider()
 
-    # 2. НЕ ЗАЛОГИНЕН (ЭКРАН ПРИВЕТСТВИЯ ИЛИ РЕГИСТРАЦИИ)
-    if not st.session_state.user_email and not st.session_state.demo_mode:
+    # 2. ЭКРАН РЕГИСТРАЦИИ (Если signup_mode=True)
+    if st.session_state.signup_mode and not st.session_state.user_email:
+        st.title("Join Sunday AI 🚀")
+        st.markdown("Create your account to start aggregating newsletters.")
         
-        # --- ВАРИАНТ А: РЕЖИМ РЕГИСТРАЦИИ (Если нажали кнопку Sign Up) ---
-        if st.session_state.signup_mode:
-            st.title("Join Sunday AI 🚀")
-            st.markdown("Create your account to start aggregating newsletters.")
-            
-            # Вкладки для удобства
-            tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
-            
-            with tab_signup:
-                with st.form("signup_form"):
-                    email_new = st.text_input("Enter your email")
-                    if st.form_submit_button("Create Account", type="primary", use_container_width=True):
-                        if not email_new: st.warning("Email required")
-                        else:
-                            uid, err = create_user_profile(email_new)
-                            if uid:
-                                st.session_state.user_email = email_new
-                                st.session_state.user_uuid = uid
-                                st.session_state.signup_mode = False
-                                cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
-                                st.success("Welcome!")
-                                st.rerun()
-                            else: st.error(err)
-            
-            with tab_login:
-                with st.form("login_form"):
-                    email_ex = st.text_input("Enter your email")
-                    if st.form_submit_button("Log In", use_container_width=True):
-                        if not email_ex: st.warning("Email required")
-                        else:
-                            uid = get_user_uuid(email_ex)
-                            if uid:
-                                st.session_state.user_email = email_ex
-                                st.session_state.user_uuid = uid
-                                st.session_state.signup_mode = False
-                                cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
-                                st.rerun()
-                            else: st.error("User not found.")
-            
-            st.divider()
-            if st.button("← Back to Welcome Screen", type="secondary"):
-                st.session_state.signup_mode = False
-                st.rerun()
-                
-            st.stop() # Чтобы не показывать Welcome ниже
+        tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
+        
+        with tab_signup:
+            with st.form("signup_form"):
+                email_new = st.text_input("Enter your email")
+                if st.form_submit_button("Create Account", type="primary", use_container_width=True):
+                    if not email_new: st.warning("Email required")
+                    else:
+                        uid, err = create_user_profile(email_new)
+                        if uid:
+                            st.session_state.user_email = email_new
+                            st.session_state.user_uuid = uid
+                            st.session_state.signup_mode = False
+                            cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
+                            st.success("Account created!")
+                            st.rerun()
+                        else: st.error(err)
+        
+        with tab_login:
+            with st.form("login_form"):
+                email_ex = st.text_input("Enter your email")
+                if st.form_submit_button("Log In", use_container_width=True):
+                    if not email_ex: st.warning("Email required")
+                    else:
+                        uid = get_user_uuid(email_ex)
+                        if uid:
+                            st.session_state.user_email = email_ex
+                            st.session_state.user_uuid = uid
+                            st.session_state.signup_mode = False
+                            cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
+                            st.rerun()
+                        else: st.error("User not found.")
+        
+        st.divider()
+        if st.button("← Back", type="secondary"):
+            st.session_state.signup_mode = False
+            st.rerun()
+        st.stop()
 
-        # --- ВАРИАНТ Б: ОБЫЧНЫЙ ВЕЛКОМ СКРИН ---
-        else:
-            col1, col2, col3 = st.columns([1,2,1])
-            with col2: st.title("Sunday AI ☕")
-            st.markdown("<h3 style='text-align: center; color: gray;'>Your personal AI Analyst.</h3>", unsafe_allow_html=True)
-            st.write("")
-            
-            if st.button("👀 See Live Demo (Instant)", type="primary", use_container_width=True, key="main_demo_btn"):
-                 st.session_state.demo_mode = True
-                 st.rerun()
-            
-            st.markdown("<div style='text-align: center; margin-top: 10px; color: #666;'>or</div>", unsafe_allow_html=True)
-            
-            if st.button("Log In / Sign Up", type="secondary", use_container_width=True, key="main_login_btn"):
-                st.session_state.signup_mode = True
-                st.rerun()
-                
-            st.divider()
-            st.stop()
+    # 3. ЭКРАН ПРИВЕТСТВИЯ (Если не залогинен, не демо, не регистрация)
+    if not st.session_state.user_email and not st.session_state.demo_mode:
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2: st.title("Sunday AI ☕")
+        st.markdown("<h3 style='text-align: center; color: gray;'>Your personal AI Analyst.</h3>", unsafe_allow_html=True)
+        st.write("")
+        
+        if st.button("👀 See Live Demo (Instant)", type="primary", use_container_width=True, key="welcome_demo"):
+             st.session_state.demo_mode = True
+             st.rerun()
+        
+        st.markdown("<div style='text-align: center; margin-top: 10px; color: #666;'>or</div>", unsafe_allow_html=True)
+        
+        if st.button("Log In / Sign Up", type="secondary", use_container_width=True, key="welcome_login"):
+            st.session_state.signup_mode = True
+            st.rerun()
+        st.stop()
 
-    # 3. ЗАЛОГИНЕН -> ПОКАЗЫВАЕМ КОНТЕНТ
+    # ==========================
+    # === ОСНОВНОЙ КОНТЕНТ ===
+    # ==========================
     
-    # --- TAB: MY BRIEFS ---
+    # --- PAGE: MY BRIEFS ---
     if page == "My Briefs":
         if st.session_state.demo_mode:
-            st.title("Strategic Reports (Live Demo)")
+            st.title("Strategic Reports (Demo)")
             digest_data = get_live_demo_data()
             digests = [digest_data]
             ui.card(title="👋 Welcome!", content="This is a REAL digest generated from the admin's inbox.", key="welcome")
         else:
             st.title("Strategic Reports")
             digests = get_user_digests(st.session_state.user_uuid)
-        
-        if not digests:
-            ui.card(title="No Briefs Yet", content="Forward emails to start.", key="empty")
-        else:
-            # Превращаем ID в строку
+            if not digests:
+                ui.card(title="No Briefs Yet", content="Forward emails to your Inbox address (check Settings).", key="empty")
+
+        if digests:
+            # FIX: Превращаем ID в строку
             options = {f"Digest #{str(d.get('id', '0'))[:4]}": d for d in digests}
             sel = st.selectbox("Select Report:", list(options.keys()))
             brief = options[sel]
@@ -327,42 +325,59 @@ def main():
             actions = raw.get('action_items', []) if isinstance(raw, dict) else []
             for act in actions: st.markdown(f'<div class="action-item">☐ {act}</div>', unsafe_allow_html=True)
 
-    # --- TAB: SETTINGS ---
-    elif page == "Settings" and not st.session_state.demo_mode:
+    # --- PAGE: SETTINGS (ТЕПЕРЬ ДОСТУПНА ВСЕМ) ---
+    elif page == "Settings":
         st.title("⚙️ Personalization")
-        prof = get_user_profile(st.session_state.user_uuid)
-        if prof:
-            st.info(f"Forward to: **{prof.get('inbox_email')}**")
+        
+        # ВАРИАНТ А: ДЕМО (Только просмотр)
+        if st.session_state.demo_mode:
+            st.info("ℹ️ These settings are **Read-Only** in Demo mode.")
+            st.text_input("Role", value="Venture Capitalist", disabled=True)
+            st.text_area("Focus Areas", value="SaaS, AI Agents, Defense Tech", disabled=True)
+            st.time_input("Delivery Time", value=datetime.strptime("09:00", "%H:%M"), disabled=True)
             
-            with st.form("settings"):
-                c1, c2 = st.columns(2)
-                with c1:
-                    role = st.text_input("Role", value=prof.get('role', 'Founder'))
-                    day = st.selectbox("Day", ["Monday", "Sunday"], index=0 if prof.get('digest_day') == "Monday" else 1)
-                with c2:
-                    focus = st.text_area("Focus Areas", value=", ".join(prof.get('focus_areas', [])))
-                    time_val = st.time_input("Time (UTC)", value=pd.to_datetime(str(prof.get('digest_time', '09:00:00'))).time())
+            st.warning("Want to customize this?")
+            if st.button("🚀 Create Free Account", type="primary", use_container_width=True, key="settings_signup"):
+                st.session_state.demo_mode = False
+                st.session_state.signup_mode = True
+                st.rerun()
                 
-                if st.form_submit_button("Save"):
-                    update_user_profile(st.session_state.user_uuid, {
-                        "role": role, 
-                        "focus_areas": [x.strip() for x in focus.split(',')],
-                        "digest_day": day,
-                        "digest_time": str(time_val)
-                    })
-                    st.success("Saved!")
-                    st.rerun()
-            
-            st.divider()
-            st.markdown("### ⚡️ Manual Trigger")
-            st.caption("Generate digest immediately.")
-            if st.button("Generate Now", type="secondary", use_container_width=True):
-                with st.spinner("Chef is cooking... (30-60s)"):
-                    if run_digest(st.session_state.user_uuid):
-                        st.success("Done! Check 'My Briefs'.")
-                        st.balloons()
-                    else:
-                        st.warning("Not enough new emails.")
+        # ВАРИАНТ Б: РЕАЛЬНЫЙ ЮЗЕР (Редактирование)
+        else:
+            prof = get_user_profile(st.session_state.user_uuid)
+            if prof:
+                # Если вдруг inbox_email пустой (старый юзер), покажем заглушку
+                inbox = prof.get('inbox_email') or "Generating..."
+                st.info(f"Forward to: **{inbox}**")
+                
+                with st.form("settings"):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        role = st.text_input("Role", value=prof.get('role', 'Founder'))
+                        day = st.selectbox("Day", ["Monday", "Sunday"], index=0 if prof.get('digest_day') == "Monday" else 1)
+                    with c2:
+                        focus = st.text_area("Focus Areas", value=", ".join(prof.get('focus_areas', [])))
+                        time_val = st.time_input("Time (UTC)", value=pd.to_datetime(str(prof.get('digest_time', '09:00:00'))).time())
+                    
+                    if st.form_submit_button("Save Changes", type="primary"):
+                        update_user_profile(st.session_state.user_uuid, {
+                            "role": role, 
+                            "focus_areas": [x.strip() for x in focus.split(',')],
+                            "digest_day": day,
+                            "digest_time": str(time_val)
+                        })
+                        st.success("Saved!")
+                        st.rerun()
+                
+                st.divider()
+                st.markdown("### ⚡️ Manual Trigger")
+                if st.button("Generate Now", type="secondary", use_container_width=True):
+                    with st.spinner("Chef is cooking... (30-60s)"):
+                        if run_digest(st.session_state.user_uuid):
+                            st.success("Done! Check 'My Briefs'.")
+                            st.balloons()
+                        else:
+                            st.warning("Not enough new emails found yet.")
 
 if __name__ == "__main__":
     main()
