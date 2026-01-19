@@ -9,38 +9,67 @@ from supabase import create_client, Client
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# Загрузка .env
 load_dotenv()
 
-# --- CONFIG ---
-supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+# --- CONFIG (БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ) ---
+# Чтобы Streamlit не падал, если ключи еще не прогрузились
+try:
+    import streamlit as st
+    def get_secret(key): return os.environ.get(key) or st.secrets.get(key)
+except:
+    def get_secret(key): return os.environ.get(key)
+
+SUPABASE_URL = get_secret("SUPABASE_URL")
+SUPABASE_KEY = get_secret("SUPABASE_KEY")
+GEMINI_KEY = get_secret("GEMINI_API_KEY")
+EMAIL_USER = get_secret("EMAIL_USER")
+EMAIL_PASS = get_secret("EMAIL_PASS")
+
+# 1. Supabase Init
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"⚠️ Supabase Init Error: {e}")
+        supabase = None
+else:
+    print("⚠️ Supabase Keys Missing")
+    supabase = None
+
+# 2. Gemini Init (БЕЗ ЭТОГО APP.PY УПАДЕТ ПРИ ИМПОРТЕ)
+if GEMINI_KEY:
+    try:
+        client = genai.Client(api_key=GEMINI_KEY)
+    except Exception as e:
+        print(f"⚠️ Gemini Client Error: {e}")
+        client = None
+else:
+    print("⚠️ GEMINI_API_KEY Missing")
+    client = None
 
 # --- UTILS ---
 
 def clean_json_response(text):
-    """Очищает ответ Gemini от markdown ```json ... ```"""
     text = re.sub(r"```json\s*", "", text)
     text = re.sub(r"```", "", text)
     return text.strip()
 
 def generate_email_html(digest_data):
-    """Верстает красивый HTML из JSON отчета"""
     summary = digest_data.get('big_picture', 'See details below.')
+    current_date = datetime.now().strftime('%B %d, %Y')
     
     html = f"""
     <html>
     <body style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-        
         <div style="text-align: center; margin-bottom: 30px;">
             <h1 style="color: #111; margin: 0;">Sunday Brief ☕</h1>
-            <p style="color: #666; font-size: 14px;">{datetime.now().strftime('%B %d, %Y')}</p>
+            <p style="color: #666; font-size: 14px;">{current_date}</p>
         </div>
-
         <div style="background: #eff6ff; padding: 25px; border-radius: 12px; margin-bottom: 30px; border-left: 6px solid #3b82f6;">
             <h2 style="color: #1e3a8a; margin-top: 0; font-size: 18px;">🌍 The Big Picture</h2>
             <p style="line-height: 1.6; font-size: 16px; color: #1e40af; margin-bottom: 0;">{summary}</p>
         </div>
-        
         <h3 style="border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 30px;">📊 Key Strategic Insights</h3>
     """
     
@@ -58,7 +87,6 @@ def generate_email_html(digest_data):
         </div>
         """
 
-    # ACTION ITEMS
     actions = digest_data.get('action_items', [])
     if actions:
         html += """
@@ -79,27 +107,22 @@ def generate_email_html(digest_data):
     return html
 
 def send_email(to_email, subject, html_body):
-    """Реальная отправка через SMTP"""
-    smtp_user = os.environ.get("EMAIL_USER")
-    smtp_pass = os.environ.get("EMAIL_PASS")
-    smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-    
-    if not smtp_user or not smtp_pass:
-        print("⚠️ SMTP credentials missing. Email not sent.")
+    if not EMAIL_USER or not EMAIL_PASS:
+        print("⚠️ SMTP credentials missing.")
         return False
-
+        
+    smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
     try:
         msg = MIMEMultipart()
-        msg['From'] = f"Sunday AI <{smtp_user}>"
+        msg['From'] = f"Sunday AI <{EMAIL_USER}>"
         msg['To'] = to_email
         msg['Subject'] = subject
         msg.attach(MIMEText(html_body, 'html'))
         
         with smtplib.SMTP(smtp_server, 587) as server:
             server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
-        
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, to_email, msg.as_string())
         print(f"📨 Email sent to {to_email}")
         return True
     except Exception as e:
@@ -113,6 +136,9 @@ def summarize_single_email(email_body, sender, subject):
     """
     Анализирует ОДНО письмо.
     """
+    if not client: return None
+
+    # ТВОЙ ОРИГИНАЛЬНЫЙ ПРОМПТ
     prompt = f"""
     ROLE: You are an Expert Content Analyst for a Newsletter Aggregator.
     
@@ -127,7 +153,7 @@ def summarize_single_email(email_body, sender, subject):
     INPUT EMAIL:
     From: {sender}
     Subject: {subject}
-    Body: {email_body[:5000]} (truncated)
+    Body: {email_body[:8000]} (truncated)
 
     OUTPUT JSON format only:
     {{
@@ -139,7 +165,7 @@ def summarize_single_email(email_body, sender, subject):
     """
     try:
         response = client.models.generate_content(
-            model="gemini-3-pro-preview", # Используем стабильную версию
+            model="gemini-3-pro-preview", # <-- ТВОЯ МОДЕЛЬ
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -155,15 +181,16 @@ def synthesize_weekly_report(summaries, user_profile):
     """
     Пишет отчет, учитывая РАЗНЫЕ интересы пользователя.
     """
-    # 1. Готовим данные для промпта
+    if not client: return None
+
     context_text = ""
     for item in summaries:
         context_text += f"- [{item['topic']}] ({item['category']}): {item['summary']} (Signal: {item['importance']}/5)\n\n"
 
-    # 2. Достаем профиль
     role = user_profile.get('role', 'Founder')
     focus_areas = ", ".join(user_profile.get('focus_areas', []) or ["General Tech"])
 
+    # ТВОЙ ОРИГИНАЛЬНЫЙ ПРОМПТ
     prompt = f"""
     ROLE: You are an Elite Strategic Advisor for a {role}.
     
@@ -201,7 +228,7 @@ def synthesize_weekly_report(summaries, user_profile):
     
     try:
         response = client.models.generate_content(
-            model="gemini-3-flash-preview", # Используем стабильную версию
+            model="gemini-3-flash-preview", # <-- ТВОЯ МОДЕЛЬ
             contents=prompt,
             config={'response_mime_type': 'application/json'}
         )
@@ -211,18 +238,26 @@ def synthesize_weekly_report(summaries, user_profile):
         return None
 
 # ==========================================
-# 🚀 MAIN PIPELINE ORCHESTRATOR
+# 🚀 PUBLIC FUNCTION: RUN DIGEST
 # ==========================================
-def main():
-    print("🚀 Starting Sunday Pipeline...")
+
+def run_digest(user_id):
+    if not supabase or not client:
+        print("❌ Pipeline halted: Missing API Keys.")
+        return False
+
+    print(f"🚀 Starting pipeline for user: {user_id}")
     
-    users = supabase.table("profiles").select("*").execute()
-    
-    for user in users.data:
-        print(f"\n👤 User: {user.get('personal_email')}")
-        user_id = user['id']
+    try:
+        # 1. Получаем профиль
+        user_res = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        if not user_res.data:
+            print("❌ User not found")
+            return False
         
-        # --- ШАГ 1: JUNIOR CHEF ---
+        user = user_res.data[0]
+        
+        # 2. Обработка сырых писем (Junior Chef)
         raw_emails = supabase.table("raw_emails") \
             .select("*") \
             .eq("user_id", user_id) \
@@ -230,14 +265,11 @@ def main():
             .execute()
         
         if raw_emails.data:
-            print(f"   🍳 Cooking {len(raw_emails.data)} raw emails...")
+            print(f"  🍳 Cooking {len(raw_emails.data)} raw emails...")
             for email in raw_emails.data:
                 summary_data = summarize_single_email(
-                    email['body_plain'], 
-                    email['sender'], 
-                    email['subject']
+                    email['body_plain'], email['sender'], email['subject']
                 )
-                
                 if summary_data:
                     supabase.table("email_summaries").insert({
                         "user_id": user_id,
@@ -250,12 +282,8 @@ def main():
                     
                     supabase.table("raw_emails").update({"processing_status": "summarized"}) \
                         .eq("id", email['id']).execute()
-                    
-                    print(f"      ✅ Processed: {email['subject'][:30]}...")
-        else:
-            print("   💤 No new raw emails to process.")
 
-        # --- ШАГ 2: HEAD CHEF ---
+        # 3. Генерация отчета (Head Chef)
         pending_summaries = supabase.table("email_summaries") \
             .select("*") \
             .eq("user_id", user_id) \
@@ -264,15 +292,14 @@ def main():
             .execute()
             
         if not pending_summaries.data:
-            print("   💤 Not enough content for a digest yet.")
-            continue
+            print("  💤 Not enough content (high importance) for a digest.")
+            return False
             
-        print(f"   👨‍🍳 Head Chef synthesising {len(pending_summaries.data)} items...")
+        print(f"  👨‍🍳 Head Chef synthesising {len(pending_summaries.data)} items...")
         
         final_brief = synthesize_weekly_report(pending_summaries.data, user)
         
         if final_brief:
-            # 2.1 Сохраняем Digest
             digest_res = supabase.table("digests").insert({
                 "user_id": user_id,
                 "user_email": user.get('personal_email'),
@@ -280,33 +307,25 @@ def main():
                 "structured_content": final_brief, 
                 "period_start": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),
                 "period_end": datetime.now(timezone.utc).isoformat(),
-                "is_sent": True # Ставим True, так как сейчас отправим
+                "is_sent": True 
             }).execute()
             
-            digest_id = digest_res.data[0]['id']
-            
-            # 2.2 Привязываем саммари
+            new_digest_id = digest_res.data[0]['id']
             summary_ids = [s['id'] for s in pending_summaries.data]
-            supabase.table("email_summaries").update({"digest_id": digest_id}) \
+            supabase.table("email_summaries").update({"digest_id": new_digest_id}) \
                 .in_("id", summary_ids).execute()
 
-            print("   ✨ Digest Created in DB!")
+            print("  ✨ Digest Created!")
 
-            # 2.3 ОТПРАВКА ПИСЬМА (НОВОЕ)
-            user_email = user.get('personal_email')
-            print(f"   📨 Sending email to {user_email}...")
-            
-            # Генерируем красивый HTML
             email_html = generate_email_html(final_brief)
+            send_email(user.get('personal_email'), f"☕ Your Sunday Brief", email_html)
             
-            # Отправляем
-            if send_email(user_email, f"☕ Your Sunday Brief: {datetime.now().strftime('%b %d')}", email_html):
-                print("   ✅ Email successfully sent!")
-            else:
-                print("   ❌ Email failed to send.")
-            
-        else:
-            print("   ❌ Failed to generate digest.")
+            return True
+        
+        return False
+    except Exception as e:
+        print(f"❌ CRITICAL PIPELINE ERROR: {e}")
+        return False
 
 if __name__ == "__main__":
-    main()
+    print("Run this file via app.py or scheduler.py")
