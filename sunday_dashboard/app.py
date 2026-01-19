@@ -287,16 +287,57 @@ def main():
     
     # --- PAGE: MY BRIEFS ---
     if page == "My Briefs":
+        
+        # 1. Заголовок + Кнопка настроек (в одну строку)
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            if st.session_state.demo_mode:
+                st.title("Strategic Reports")
+            else:
+                st.title("Strategic Reports")
+        with c2:
+            # Кнопка-иконка
+            st.write("")
+            st.write("")
+            if st.button("⚙️", key="mob_settings_btn"):
+                # Мы используем Session State, чтобы "переопределить" выбор меню
+                st.session_state.show_mobile_settings = True
+                st.rerun()
+
+        # 2. Если нажали настройки - показываем их ПОВЕРХ отчетов (как модалку)
+        if st.session_state.get('show_mobile_settings', False):
+            with st.container():
+                st.info("⚙️ Quick Settings")
+                if st.button("❌ Close", key="close_mob_settings"):
+                    st.session_state.show_mobile_settings = False
+                    st.rerun()
+                
+                # Встраиваем код настроек (READ ONLY для Демо)
+                if st.session_state.demo_mode:
+                     st.text_input("Role", "VC Investor", disabled=True)
+                     st.caption("Sign Up to edit.")
+                else:
+                    # РЕАЛЬНЫЕ НАСТРОЙКИ (мини-версия)
+                    prof = get_user_profile(st.session_state.user_uuid)
+                    if prof:
+                        st.caption(f"Inbox: {prof.get('inbox_email')}")
+                        new_role = st.text_input("Role", value=prof.get('role', 'Founder'), key="mob_role")
+                        if st.button("Save", key="mob_save"):
+                            update_user_profile(st.session_state.user_uuid, {"role": new_role})
+                            st.success("Saved!")
+                            st.session_state.show_mobile_settings = False
+                            st.rerun()
+                st.divider()
+
+        # 3. Логика загрузки дайджестов (как было)
         if st.session_state.demo_mode:
-            st.title("Strategic Reports (Demo)")
             digest_data = get_live_demo_data()
             digests = [digest_data]
             ui.card(title="👋 Welcome!", content="This is a REAL digest generated from the admin's inbox.", key="welcome")
         else:
-            st.title("Strategic Reports")
             digests = get_user_digests(st.session_state.user_uuid)
             if not digests:
-                ui.card(title="No Briefs Yet", content="Forward emails to your Inbox address (check Settings).", key="empty")
+                ui.card(title="No Briefs Yet", content="Forward emails to your Inbox address.", key="empty")
 
         if digests:
             # FIX: Превращаем ID в строку
