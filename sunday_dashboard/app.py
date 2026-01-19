@@ -135,103 +135,167 @@ def create_user_profile(email):
         return new_id, None
     except Exception as e:
         return None, str(e)
+    
+def get_live_demo_data():
+    """Берет реальный последний дайджест админа для демо-режима"""
+    # 👇 ВСТАВЬ СЮДА СВОЙ UUID, КОТОРЫЙ ТЫ СКОПИРОВАЛ ИЗ SUPABASE
+    ADMIN_UUID = "aa1a97d8-a102-4945-9390-239a6b6c5d68" 
+    
+    try:
+        # Пытаемся достать последний отчет этого юзера
+        response = supabase.table("digests") \
+            .select("*") \
+            .eq("user_id", ADMIN_UUID) \
+            .order("period_start", desc=True) \
+            .limit(1) \
+            .execute()
+            
+        if response.data:
+            return response.data[0]
+        else:
+            # Если у админа нет дайджестов, возвращаем фейк
+            return get_fallback_data()
+    except Exception as e:
+        print(f"Demo fetch error: {e}")
+        return get_fallback_data()
+
+def get_fallback_data():
+    """Запасной вариант (хардкод), если база не отвечает"""
+    return {
+        "id": "demo_fallback",
+        "period_start": datetime.now() - timedelta(days=7),
+        "period_end": datetime.now(),
+        "summary_text": "<b>AI Models War.</b><br>This is a fallback demo data because the live fetch failed. But normally you'd see a real digest here.",
+        "structured_content": {
+            "trends": [{"title": "Live Demo Offline", "insight": "Could not connect to database to fetch the admin's digest."}],
+            "action_items": ["Check your internet connection", "Refresh the page"],
+            "noise_filter": "N/A"
+        }
+    }
 
 # --- MAIN APP ---
 def main():
     # 1. МЕНЕДЖЕР КУКИ (Cookies)
-    # Позволяет не входить каждый раз
     cookie_manager = stx.CookieManager()
     
     # Инициализация сессии
     if 'user_email' not in st.session_state: st.session_state.user_email = None
     if 'user_uuid' not in st.session_state: st.session_state.user_uuid = None
+    
+    # --- НОВОЕ: State для Демо ---
+    if 'demo_mode' not in st.session_state: st.session_state.demo_mode = False
 
     # ПРОВЕРКА КУКИ ПРИ ЗАГРУЗКЕ
-    # Если в сессии пусто, пытаемся достать из браузера
-    if not st.session_state.user_uuid:
+    if not st.session_state.user_uuid and not st.session_state.demo_mode:
         cookie_uuid = cookie_manager.get('sunday_user_uuid')
         if cookie_uuid:
-            # Проверяем, жив ли юзер в базе
             prof = get_user_profile(cookie_uuid)
             if prof:
                 st.session_state.user_uuid = cookie_uuid
                 st.session_state.user_email = prof.get('personal_email')
-                # st.rerun() # Иногда нужен реран, но попробуем без него для скорости
 
     with st.sidebar:
         st.title("Sunday AI ☕")
         
-        # --- ЛОГИН / РЕГИСТРАЦИЯ ---
-        if not st.session_state.user_email:
+        # --- ЛОГИН / РЕГИСТРАЦИЯ / ДЕМО ---
+        # Показываем форму входа ТОЛЬКО если нет юзера И не включено демо
+        if not st.session_state.user_email and not st.session_state.demo_mode:
+            
+            # === ГЛАВНАЯ КНОПКА ДЛЯ ОНБОРДИНГА ===
+            st.info("Stop drowning in newsletters. See what Sunday AI can do for you.")
+            if st.button("👀 See Live Demo (Instant)", type="primary", use_container_width=True):
+                st.session_state.demo_mode = True
+                st.rerun()
+            # =====================================
+
+            st.markdown("---")
+            st.caption("Or sign in to your account")
+
             mode = st.radio("Auth Mode", ["Sign In", "Sign Up"], label_visibility="collapsed")
-            st.divider()
             
             email_input = st.text_input("Email", placeholder="you@example.com")
             
             if mode == "Sign In":
-                if st.button("Log In", type="primary", use_container_width=True):
+                if st.button("Log In", use_container_width=True):
                     if not email_input:
                         st.warning("Please enter email.")
                     else:
                         uuid_found = get_user_uuid(email_input)
                         if uuid_found:
-                            # Успешный вход
                             st.session_state.user_email = email_input
                             st.session_state.user_uuid = uuid_found
-                            
-                            # СОХРАНЯЕМ КУКИ (30 дней)
                             cookie_manager.set('sunday_user_uuid', uuid_found, expires_at=datetime.now() + timedelta(days=30))
-                            
                             st.success("Welcome back!")
                             st.rerun()
                         else:
                             st.error("User not found.")
                             
             elif mode == "Sign Up":
-                if st.button("Create Account", type="primary", use_container_width=True):
+                if st.button("Create Account", use_container_width=True):
                     if not email_input:
                         st.warning("Please enter email.")
                     else:
                         new_uuid, error = create_user_profile(email_input)
                         if new_uuid:
-                            # Успешная регистрация
                             st.session_state.user_email = email_input
                             st.session_state.user_uuid = new_uuid
-                            
-                            # СОХРАНЯЕМ КУКИ
                             cookie_manager.set('sunday_user_uuid', new_uuid, expires_at=datetime.now() + timedelta(days=30))
-                            
                             st.success("Account created!")
                             st.rerun()
                         else:
                             st.error(f"Error: {error}")
             
-            st.stop() # Не показываем контент незалогиненным
+            # БЛОКИРУЕМ КОНТЕНТ, ЕСЛИ МЫ НЕ В ДЕМО И НЕ ЗАЛОГИНЕНЫ
+            st.stop() 
             
-        # --- МЕНЮ (ЕСЛИ ЗАЛОГИНЕН) ---
+        # --- МЕНЮ (ЕСЛИ ЗАЛОГИНЕН ИЛИ ДЕМО) ---
         else:
-            st.caption(f"👤 {st.session_state.user_email}")
+            if st.session_state.demo_mode:
+                st.warning("👀 You are in DEMO mode")
+                st.markdown("Like what you see?")
+                if st.button("🚀 Create Free Account", type="primary", use_container_width=True):
+                    st.session_state.demo_mode = False
+                    st.rerun()
+            else:
+                st.caption(f"👤 {st.session_state.user_email}")
+            
             st.divider()
             
-            page = st.radio("Menu", ["My Briefs", "Settings"], label_visibility="collapsed")
+            # Меню доступно, но в демо только "My Briefs" имеет смысл
+            page_options = ["My Briefs"]
+            if not st.session_state.demo_mode:
+                page_options.append("Settings")
+            
+            page = st.radio("Menu", page_options, label_visibility="collapsed")
             
             st.divider()
-            if st.button("Sign Out", use_container_width=True):
-                # Безопасное удаление куки
-                try:
-                    cookie_manager.delete('sunday_user_uuid')
-                except KeyError:
-                    pass # Куки уже нет или она не найдена, это нормально
-                
-                # Очистка сессии
-                st.session_state.user_email = None
-                st.session_state.user_uuid = None
-                st.rerun()
+            
+            if not st.session_state.demo_mode:
+                if st.button("Sign Out", use_container_width=True):
+                    try: cookie_manager.delete('sunday_user_uuid')
+                    except: pass
+                    st.session_state.user_email = None
+                    st.session_state.user_uuid = None
+                    st.rerun()
+            else:
+                if st.button("Exit Demo", use_container_width=True):
+                    st.session_state.demo_mode = False
+                    st.rerun()
 
     # --- PAGE 1: MY BRIEFS ---
     if page == "My Briefs":
-        st.title("Strategic Reports")
-        digests = get_user_digests(st.session_state.user_uuid)
+        if st.session_state.demo_mode:
+            st.title("Strategic Reports (Live Demo)")
+            
+            # 👇 ИЗМЕНЕНИЕ ЗДЕСЬ: Зовем новую функцию
+            demo_digest = get_live_demo_data() 
+            digests = [demo_digest]
+            
+            ui.card(title="👋 Welcome to Sunday AI", content="You are viewing a REAL generated digest from the creator's inbox. This updates automatically every Sunday.", key="welcome_msg")
+        else:
+            # (остальной код без изменений)
+            st.title("Strategic Reports")
+            digests = get_user_digests(st.session_state.user_uuid)
         
         if not digests:
             ui.card(title="No Briefs Yet", content="Forward emails to your Sunday address to generate reports.", key="empty")
@@ -303,7 +367,8 @@ def main():
                 st.info(noise)
 
     # --- PAGE 2: SETTINGS ---
-    elif page == "Settings":
+    elif page == "Settings" and not st.session_state.demo_mode:
+        # Весь код Settings без изменений
         st.title("⚙️ Personalization")
         
         profile = get_user_profile(st.session_state.user_uuid)
@@ -311,31 +376,22 @@ def main():
         if not profile:
             st.error("Profile not found.")
         else:
-            # 1. PERSONAL INBOX
             inbox_email = profile.get('inbox_email') or "Generating..."
             
             st.markdown("### 📬 Your Sunday Inbox")
             st.info("Forward your newsletters to this address:")
-            
-            # Поле для копирования
             st.code(inbox_email, language="text")
             
-            # === НОВАЯ ССЫЛКА ЗДЕСЬ ===
             st.markdown("""
             <div style="margin-top: -10px; margin-bottom: 20px; font-size: 14px;">
-                <a href="https://support.google.com/mail/answer/10957?hl=ru" target="_blank" style="text-decoration: none; color: #2563eb;">
+                <a href="https://support.google.com/mail/answer/10957?hl=en" target="_blank" style="text-decoration: none; color: #2563eb;">
                     📚 How to set up auto-forwarding in Gmail →
                 </a>
             </div>
             """, unsafe_allow_html=True)
-            # ==========================
             
             st.divider()
 
-            # 2. AI PERSONA CONFIG
-            # (дальше код остается без изменений...)
-
-            # 2. AI PERSONA CONFIG
             with st.container():
                 st.markdown("### 🧠 AI Analyst Configuration")
                 st.caption("Customize how Sunday AI analyzes your content.")
@@ -344,15 +400,8 @@ def main():
                     col1, col2 = st.columns(2)
                     
                     with col1:
-                        # Role
                         current_role = profile.get('role') or "Founder"
-                        new_role = st.text_input(
-                            "Your Role", 
-                            value=current_role,
-                            help="E.g. VC Investor, Engineer. Defines the report's tone."
-                        )
-                        
-                        # Day
+                        new_role = st.text_input("Your Role", value=current_role)
                         current_day = profile.get('digest_day') or "Sunday"
                         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                         try: idx = days.index(current_day)
@@ -360,19 +409,10 @@ def main():
                         new_day = st.selectbox("Digest Day", days, index=idx)
 
                     with col2:
-                        # Focus Areas
                         current_focus = profile.get('focus_areas') or []
                         if not isinstance(current_focus, list): current_focus = []
                         focus_str = ", ".join(current_focus)
-                        
-                        new_focus_str = st.text_area(
-                            "Focus Areas (comma separated)", 
-                            value=focus_str,
-                            height=100,
-                            help="E.g. SaaS, Defense Tech, Crypto. The AI will prioritize these."
-                        )
-                        
-                        # Time
+                        new_focus_str = st.text_area("Focus Areas", value=focus_str, height=100)
                         current_time = profile.get('digest_time') or "09:00"
                         new_time = st.time_input("Delivery Time (UTC)", value=pd.to_datetime(str(current_time)).time())
 
