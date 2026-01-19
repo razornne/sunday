@@ -118,7 +118,8 @@ def create_user_profile(email):
 
 # --- DEMO HELPER (ВАЖНО: ВСТАВЬ СВОЙ UUID) ---
 def get_live_demo_data():
-    ADMIN_UUID = "aa1a97d8-a102-4945-9390-239a6b6c5d68" 
+    # 👇👇👇 НЕ ЗАБУДЬ ВЕРНУТЬ СЮДА СВОЙ UUID ПЕРЕД ПУШЕМ 👇👇👇
+    ADMIN_UUID = "ТВОЙ_UUID_ЗДЕСЬ" 
     try:
         response = supabase.table("digests").select("*").eq("user_id", ADMIN_UUID).order("period_start", desc=True).limit(1).execute()
         if response.data: return response.data[0]
@@ -186,17 +187,14 @@ def main():
                         st.rerun()
                     else: st.error(err)
             
-            # Блокировка контента, если не залогинен
-            # (Но мы не делаем st.stop() сразу, чтобы отрисовать мобильную кнопку в центре)
-            
         else:
             # Юзер залогинен ИЛИ Демо
             if st.session_state.demo_mode:
                 st.warning("👀 DEMO MODE")
-                if st.button("🚀 Sign Up Free", type="primary", use_container_width=True):
+                if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="sb_signup"):
                     st.session_state.demo_mode = False
                     st.rerun()
-                if st.button("Exit Demo", use_container_width=True):
+                if st.button("Exit Demo", use_container_width=True, key="sb_exit"):
                     st.session_state.demo_mode = False
                     st.rerun()
             else:
@@ -224,10 +222,26 @@ def main():
              st.session_state.demo_mode = True
              st.rerun()
         st.divider()
-        st.stop() # Вот теперь останавливаем рендер
+        st.stop() # Останавливаем рендер
 
     # --- TAB: MY BRIEFS ---
     if page == "My Briefs":
+        
+        # === 🚨 MOBILE FIX: КНОПКИ ВЫХОДА ИЗ ДЕМО (В ПОТОКЕ) ===
+        if st.session_state.demo_mode:
+            st.info("👀 You are viewing a Live Demo.")
+            mob_col1, mob_col2 = st.columns(2)
+            with mob_col1:
+                if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="mobile_signup_btn"):
+                    st.session_state.demo_mode = False
+                    st.rerun()
+            with mob_col2:
+                if st.button("Exit Demo", type="secondary", use_container_width=True, key="mobile_exit_btn"):
+                    st.session_state.demo_mode = False
+                    st.rerun()
+            st.divider()
+        # ========================================================
+
         if st.session_state.demo_mode:
             st.title("Strategic Reports (Live Demo)")
             digest_data = get_live_demo_data()
@@ -240,6 +254,7 @@ def main():
         if not digests:
             ui.card(title="No Briefs Yet", content="Forward emails to start.", key="empty")
         else:
+            # FIX: Превращаем ID в строку перед срезом, чтобы не было ошибки int
             options = {f"Digest #{str(d.get('id', '0'))[:4]}": d for d in digests}
             sel = st.selectbox("Select Report:", list(options.keys()))
             brief = options[sel]
@@ -299,7 +314,6 @@ def main():
                     if run_digest(st.session_state.user_uuid):
                         st.success("Done! Check 'My Briefs'.")
                         st.balloons()
-                        # st.rerun() # Можно раскомментировать, если нужно сразу показать
                     else:
                         st.warning("Not enough new emails.")
 
