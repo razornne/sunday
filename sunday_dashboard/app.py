@@ -1,16 +1,15 @@
 import sys
 import os
 
-# --- 1. НАСТРОЙКА ПУТЕЙ (Чтобы видеть соседнюю папку) ---
+# --- 1. НАСТРОЙКА ПУТЕЙ ---
 try:
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
     backend_path = os.path.join(parent_dir, 'sunday_backend')
     sys.path.append(backend_path)
-    from pipeline import run_digest # Импортируем нашу функцию
+    from pipeline import run_digest 
 except Exception as e:
     print(f"⚠️ Warning: Could not import backend logic. Error: {e}")
-    # Заглушка, чтобы приложение не упало при старте
     def run_digest(uid): return False
 
 # --- 2. ИМПОРТЫ ---
@@ -26,13 +25,14 @@ import extra_streamlit_components as stx
 # --- 3. CONFIG ---
 st.set_page_config(page_title="Sunday AI", page_icon="☕", layout="wide")
 
-# --- CUSTOM CSS (MOBILE OPTIMIZED) ---
+# --- CUSTOM CSS ---
 st.markdown("""
 <style>
     /* Мобильная адаптация */
     @media (max-width: 640px) {
         .block-container {
-            padding-top: 1.5rem !important;
+            /* Увеличили отступ, чтобы кнопки не залезали под статус-бар телефона */
+            padding-top: 3rem !important; 
             padding-left: 1rem !important;
             padding-right: 1rem !important;
         }
@@ -116,9 +116,9 @@ def create_user_profile(email):
         return new_id, None
     except Exception as e: return None, str(e)
 
-# --- DEMO HELPER (ВАЖНО: ВСТАВЬ СВОЙ UUID) ---
+# --- DEMO HELPER ---
 def get_live_demo_data():
-    # 👇👇👇 НЕ ЗАБУДЬ ВЕРНУТЬ СЮДА СВОЙ UUID ПЕРЕД ПУШЕМ 👇👇👇
+    # 👇👇👇 ПРОВЕРЬ, ЧТО ТУТ ТВОЙ АКТУАЛЬНЫЙ UUID 👇👇👇
     ADMIN_UUID = "ТВОЙ_UUID_ЗДЕСЬ" 
     try:
         response = supabase.table("digests").select("*").eq("user_id", ADMIN_UUID).order("period_start", desc=True).limit(1).execute()
@@ -140,7 +140,7 @@ def main():
     if 'user_uuid' not in st.session_state: st.session_state.user_uuid = None
     if 'demo_mode' not in st.session_state: st.session_state.demo_mode = False
 
-    # Auto-Login via Cookie (skipped if Demo Mode is active)
+    # Auto-Login
     if not st.session_state.user_uuid and not st.session_state.demo_mode:
         cookie_uuid = cookie_manager.get('sunday_user_uuid')
         if cookie_uuid:
@@ -149,22 +149,17 @@ def main():
                 st.session_state.user_uuid = cookie_uuid
                 st.session_state.user_email = prof.get('personal_email')
 
-    # === ЛОГИКА ОТОБРАЖЕНИЯ ===
-    
+    # === SIDEBAR ===
     with st.sidebar:
         st.title("Sunday AI ☕")
         
-        # 1. AUTH / SIDEBAR LOGIC
         if not st.session_state.user_email and not st.session_state.demo_mode:
-            # Кнопка демо в сайдбаре (для ПК)
             st.info("Stop drowning in newsletters.")
             if st.button("👀 See Live Demo", type="primary", use_container_width=True, key="sb_demo_btn"):
                 st.session_state.demo_mode = True
                 st.rerun()
-            
             st.divider()
             
-            # Форма входа
             mode = st.radio("Auth Mode", ["Sign In", "Sign Up"], label_visibility="collapsed")
             email_input = st.text_input("Email", placeholder="you@example.com")
             
@@ -186,14 +181,9 @@ def main():
                         cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
                         st.rerun()
                     else: st.error(err)
-            
         else:
-            # Юзер залогинен ИЛИ Демо
             if st.session_state.demo_mode:
                 st.warning("👀 DEMO MODE")
-                if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="sb_signup"):
-                    st.session_state.demo_mode = False
-                    st.rerun()
                 if st.button("Exit Demo", use_container_width=True, key="sb_exit"):
                     st.session_state.demo_mode = False
                     st.rerun()
@@ -210,38 +200,38 @@ def main():
 
     # === ГЛАВНЫЙ ЭКРАН (CONTENT) ===
 
-    # Если мы НЕ залогинены и НЕ в демо -> Показываем приветствие и кнопку для мобилок
+    # 1. Сначала проверяем: если ДЕМО - показываем кнопки управления СРАЗУ
+    # Они будут видны на телефоне в самом верху
+    if st.session_state.demo_mode:
+        st.info("👀 You are viewing a Live Demo.")
+        
+        col_nav1, col_nav2 = st.columns(2)
+        with col_nav1:
+            if st.button("🚀 Sign Up", type="primary", use_container_width=True, key="nav_signup"):
+                st.session_state.demo_mode = False
+                st.rerun()
+        with col_nav2:
+            if st.button("Exit Demo", use_container_width=True, key="nav_exit"):
+                st.session_state.demo_mode = False
+                st.rerun()
+        
+        st.divider()
+
+    # 2. Если мы НЕ залогинены и НЕ в демо -> Показываем приветствие
     if not st.session_state.user_email and not st.session_state.demo_mode:
         col1, col2, col3 = st.columns([1,2,1])
         with col2: st.title("Sunday AI ☕")
         st.markdown("<h3 style='text-align: center; color: gray;'>Your personal AI Analyst.</h3>", unsafe_allow_html=True)
         st.write("")
         
-        # Кнопка для мобильных (дублирует функционал)
         if st.button("👀 See Live Demo (Instant)", type="primary", use_container_width=True, key="main_demo_btn"):
              st.session_state.demo_mode = True
              st.rerun()
         st.divider()
-        st.stop() # Останавливаем рендер
+        st.stop()
 
     # --- TAB: MY BRIEFS ---
     if page == "My Briefs":
-        
-        # === 🚨 MOBILE FIX: КНОПКИ ВЫХОДА ИЗ ДЕМО (В ПОТОКЕ) ===
-        if st.session_state.demo_mode:
-            st.info("👀 You are viewing a Live Demo.")
-            mob_col1, mob_col2 = st.columns(2)
-            with mob_col1:
-                if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="mobile_signup_btn"):
-                    st.session_state.demo_mode = False
-                    st.rerun()
-            with mob_col2:
-                if st.button("Exit Demo", type="secondary", use_container_width=True, key="mobile_exit_btn"):
-                    st.session_state.demo_mode = False
-                    st.rerun()
-            st.divider()
-        # ========================================================
-
         if st.session_state.demo_mode:
             st.title("Strategic Reports (Live Demo)")
             digest_data = get_live_demo_data()
@@ -254,7 +244,7 @@ def main():
         if not digests:
             ui.card(title="No Briefs Yet", content="Forward emails to start.", key="empty")
         else:
-            # FIX: Превращаем ID в строку перед срезом, чтобы не было ошибки int
+            # Превращаем ID в строку
             options = {f"Digest #{str(d.get('id', '0'))[:4]}": d for d in digests}
             sel = st.selectbox("Select Report:", list(options.keys()))
             brief = options[sel]
