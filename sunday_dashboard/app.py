@@ -31,7 +31,6 @@ st.markdown("""
     /* Мобильная адаптация */
     @media (max-width: 640px) {
         .block-container {
-            /* Увеличили отступ, чтобы кнопки не залезали под статус-бар телефона */
             padding-top: 3rem !important; 
             padding-left: 1rem !important;
             padding-right: 1rem !important;
@@ -118,7 +117,7 @@ def create_user_profile(email):
 
 # --- DEMO HELPER ---
 def get_live_demo_data():
-    # 👇👇👇 ПРОВЕРЬ, ЧТО ТУТ ТВОЙ АКТУАЛЬНЫЙ UUID 👇👇👇
+    # 👇👇👇 ПРОВЕРЬ UUID 👇👇👇
     ADMIN_UUID = "aa1a97d8-a102-4945-9390-239a6b6c5d68" 
     try:
         response = supabase.table("digests").select("*").eq("user_id", ADMIN_UUID).order("period_start", desc=True).limit(1).execute()
@@ -136,9 +135,12 @@ def get_fallback_data():
 def main():
     cookie_manager = stx.CookieManager()
     
+    # Инициализация состояний
     if 'user_email' not in st.session_state: st.session_state.user_email = None
     if 'user_uuid' not in st.session_state: st.session_state.user_uuid = None
     if 'demo_mode' not in st.session_state: st.session_state.demo_mode = False
+    # 👇 НОВОЕ: Флаг "Хочу регистрации"
+    if 'signup_mode' not in st.session_state: st.session_state.signup_mode = False 
 
     # Auto-Login
     if not st.session_state.user_uuid and not st.session_state.demo_mode:
@@ -149,87 +151,142 @@ def main():
                 st.session_state.user_uuid = cookie_uuid
                 st.session_state.user_email = prof.get('personal_email')
 
-    # === SIDEBAR ===
+    # === SIDEBAR (ВСЕГДА ДОСТУПЕН) ===
     with st.sidebar:
         st.title("Sunday AI ☕")
         
+        # Если не залогинен, показываем мини-форму или кнопку демо
         if not st.session_state.user_email and not st.session_state.demo_mode:
-            st.info("Stop drowning in newsletters.")
-            if st.button("👀 See Live Demo", type="primary", use_container_width=True, key="sb_demo_btn"):
+            if st.button("👀 See Live Demo", type="secondary", use_container_width=True, key="sb_demo_btn"):
                 st.session_state.demo_mode = True
+                st.session_state.signup_mode = False
+                st.rerun()
+            
+            st.divider()
+            st.caption("Quick Access")
+            # Если нажали в сайдбаре - тоже кидаем на форму регистрации в центр
+            if st.button("Log In / Sign Up", use_container_width=True):
+                 st.session_state.signup_mode = True
+                 st.rerun()
+
+        # Если залогинен
+        elif st.session_state.user_email:
+            st.caption(f"👤 {st.session_state.user_email}")
+            if st.button("Sign Out", use_container_width=True):
+                try: cookie_manager.delete('sunday_user_uuid')
+                except: pass
+                st.session_state.user_email = None
+                st.session_state.user_uuid = None
                 st.rerun()
             st.divider()
             
-            mode = st.radio("Auth Mode", ["Sign In", "Sign Up"], label_visibility="collapsed")
-            email_input = st.text_input("Email", placeholder="you@example.com")
-            
-            if mode == "Sign In":
-                if st.button("Log In", use_container_width=True):
-                    uid = get_user_uuid(email_input)
-                    if uid:
-                        st.session_state.user_email = email_input
-                        st.session_state.user_uuid = uid
-                        cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
-                        st.rerun()
-                    else: st.error("User not found.")
-            else:
-                if st.button("Create Account", use_container_width=True):
-                    uid, err = create_user_profile(email_input)
-                    if uid:
-                        st.session_state.user_email = email_input
-                        st.session_state.user_uuid = uid
-                        cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
-                        st.rerun()
-                    else: st.error(err)
+        # Если Демо
+        elif st.session_state.demo_mode:
+            st.warning("👀 DEMO MODE")
+            if st.button("Exit Demo", use_container_width=True, key="sb_exit"):
+                st.session_state.demo_mode = False
+                st.session_state.signup_mode = False
+                st.rerun()
+
+        # Меню навигации (только если залогинен)
+        if st.session_state.user_email:
+             page = st.radio("Menu", ["My Briefs", "Settings"], label_visibility="collapsed")
+        elif st.session_state.demo_mode:
+             page = "My Briefs"
         else:
-            if st.session_state.demo_mode:
-                st.warning("👀 DEMO MODE")
-                if st.button("Exit Demo", use_container_width=True, key="sb_exit"):
-                    st.session_state.demo_mode = False
-                    st.rerun()
-            else:
-                st.caption(f"👤 {st.session_state.user_email}")
-                if st.button("Sign Out", use_container_width=True):
-                    try: cookie_manager.delete('sunday_user_uuid')
-                    except: pass
-                    st.session_state.user_email = None; st.session_state.user_uuid = None
-                    st.rerun()
-            
-            st.divider()
-            page = st.radio("Menu", ["My Briefs", "Settings"] if not st.session_state.demo_mode else ["My Briefs"], label_visibility="collapsed")
+             page = "Welcome"
 
-    # === ГЛАВНЫЙ ЭКРАН (CONTENT) ===
+    # === ЛОГИКА ГЛАВНОГО ЭКРАНА ===
 
-    # 1. Сначала проверяем: если ДЕМО - показываем кнопки управления СРАЗУ
-    # Они будут видны на телефоне в самом верху
+    # 1. ДЕМО РЕЖИМ
     if st.session_state.demo_mode:
         st.info("👀 You are viewing a Live Demo.")
         
         col_nav1, col_nav2 = st.columns(2)
         with col_nav1:
-            if st.button("🚀 Sign Up", type="primary", use_container_width=True, key="nav_signup"):
+            # 👇 ТЕПЕРЬ ВКЛЮЧАЕТ РЕЖИМ РЕГИСТРАЦИИ
+            if st.button("🚀 Sign Up Free", type="primary", use_container_width=True, key="nav_signup"):
                 st.session_state.demo_mode = False
+                st.session_state.signup_mode = True # <-- ВАЖНО
                 st.rerun()
         with col_nav2:
             if st.button("Exit Demo", use_container_width=True, key="nav_exit"):
                 st.session_state.demo_mode = False
+                st.session_state.signup_mode = False
                 st.rerun()
-        
         st.divider()
 
-    # 2. Если мы НЕ залогинены и НЕ в демо -> Показываем приветствие
+    # 2. НЕ ЗАЛОГИНЕН (ЭКРАН ПРИВЕТСТВИЯ ИЛИ РЕГИСТРАЦИИ)
     if not st.session_state.user_email and not st.session_state.demo_mode:
-        col1, col2, col3 = st.columns([1,2,1])
-        with col2: st.title("Sunday AI ☕")
-        st.markdown("<h3 style='text-align: center; color: gray;'>Your personal AI Analyst.</h3>", unsafe_allow_html=True)
-        st.write("")
         
-        if st.button("👀 See Live Demo (Instant)", type="primary", use_container_width=True, key="main_demo_btn"):
-             st.session_state.demo_mode = True
-             st.rerun()
-        st.divider()
-        st.stop()
+        # --- ВАРИАНТ А: РЕЖИМ РЕГИСТРАЦИИ (Если нажали кнопку Sign Up) ---
+        if st.session_state.signup_mode:
+            st.title("Join Sunday AI 🚀")
+            st.markdown("Create your account to start aggregating newsletters.")
+            
+            # Вкладки для удобства
+            tab_login, tab_signup = st.tabs(["Log In", "Sign Up"])
+            
+            with tab_signup:
+                with st.form("signup_form"):
+                    email_new = st.text_input("Enter your email")
+                    if st.form_submit_button("Create Account", type="primary", use_container_width=True):
+                        if not email_new: st.warning("Email required")
+                        else:
+                            uid, err = create_user_profile(email_new)
+                            if uid:
+                                st.session_state.user_email = email_new
+                                st.session_state.user_uuid = uid
+                                st.session_state.signup_mode = False
+                                cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
+                                st.success("Welcome!")
+                                st.rerun()
+                            else: st.error(err)
+            
+            with tab_login:
+                with st.form("login_form"):
+                    email_ex = st.text_input("Enter your email")
+                    if st.form_submit_button("Log In", use_container_width=True):
+                        if not email_ex: st.warning("Email required")
+                        else:
+                            uid = get_user_uuid(email_ex)
+                            if uid:
+                                st.session_state.user_email = email_ex
+                                st.session_state.user_uuid = uid
+                                st.session_state.signup_mode = False
+                                cookie_manager.set('sunday_user_uuid', uid, expires_at=datetime.now() + timedelta(days=30))
+                                st.rerun()
+                            else: st.error("User not found.")
+            
+            st.divider()
+            if st.button("← Back to Welcome Screen", type="secondary"):
+                st.session_state.signup_mode = False
+                st.rerun()
+                
+            st.stop() # Чтобы не показывать Welcome ниже
 
+        # --- ВАРИАНТ Б: ОБЫЧНЫЙ ВЕЛКОМ СКРИН ---
+        else:
+            col1, col2, col3 = st.columns([1,2,1])
+            with col2: st.title("Sunday AI ☕")
+            st.markdown("<h3 style='text-align: center; color: gray;'>Your personal AI Analyst.</h3>", unsafe_allow_html=True)
+            st.write("")
+            
+            if st.button("👀 See Live Demo (Instant)", type="primary", use_container_width=True, key="main_demo_btn"):
+                 st.session_state.demo_mode = True
+                 st.rerun()
+            
+            st.markdown("<div style='text-align: center; margin-top: 10px; color: #666;'>or</div>", unsafe_allow_html=True)
+            
+            if st.button("Log In / Sign Up", type="secondary", use_container_width=True, key="main_login_btn"):
+                st.session_state.signup_mode = True
+                st.rerun()
+                
+            st.divider()
+            st.stop()
+
+    # 3. ЗАЛОГИНЕН -> ПОКАЗЫВАЕМ КОНТЕНТ
+    
     # --- TAB: MY BRIEFS ---
     if page == "My Briefs":
         if st.session_state.demo_mode:
