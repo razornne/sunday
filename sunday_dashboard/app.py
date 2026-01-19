@@ -119,7 +119,7 @@ def create_user_profile(email):
 # --- DEMO HELPER ---
 def get_live_demo_data():
     # 👇👇👇 ПРОВЕРЬ, ЧТО ТУТ ТВОЙ АКТУАЛЬНЫЙ UUID 👇👇👇
-    ADMIN_UUID = "ТВОЙ_UUID_ЗДЕСЬ" 
+    ADMIN_UUID = "aa1a97d8-a102-4945-9390-239a6b6c5d68" 
     try:
         response = supabase.table("digests").select("*").eq("user_id", ADMIN_UUID).order("period_start", desc=True).limit(1).execute()
         if response.data: return response.data[0]
