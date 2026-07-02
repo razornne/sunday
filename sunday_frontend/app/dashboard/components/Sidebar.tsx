@@ -1,56 +1,66 @@
 'use client';
 
-import { Inbox, Settings, LogOut, User } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { Inbox, Rss, Settings, LogOut, User } from 'lucide-react';
+import { useRouter, usePathname } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
 interface SidebarProps {
-  allDigests: any[];
-  activeDigest: any;
+  allDigests?: any[];
+  activeDigest?: any;
   profile: any;
-  onSelectDigest: (digest: any) => void;
+  onSelectDigest?: (digest: any) => void;
 }
 
-export function Sidebar({ allDigests, activeDigest, profile, onSelectDigest }: SidebarProps) {
+export function Sidebar({ allDigests = [], activeDigest, profile, onSelectDigest }: SidebarProps) {
   const router = useRouter();
+  const pathname = usePathname();
+
+  const navItemClass = (active: boolean) =>
+    `w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group border ${
+      active
+        ? 'bg-white text-stone-900 shadow-sm border-stone-100'
+        : 'text-stone-500 hover:text-stone-900 hover:bg-white hover:shadow-sm hover:border-stone-100 border-transparent'
+    }`;
 
   return (
     <aside className="w-72 flex flex-col py-12 px-8 shrink-0 h-full bg-[#FAFAF9] border-r border-stone-100">
-      
+
       {/* Logo - Editorial Style */}
       <div className="mb-16 px-2">
         <h1 className="text-3xl font-serif tracking-tight text-stone-900 select-none">
           Sunday<span className="text-[#FFB26B]">.</span>
         </h1>
       </div>
-      
+
       <nav className="flex-1 flex flex-col min-h-0 space-y-8">
-        
+
         {/* Main Menu */}
         <div className="space-y-1">
-          <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-white text-stone-900 shadow-sm border border-stone-100 transition-all duration-200 group">
-            <Inbox size={18} strokeWidth={1.5} className="text-[#FFB26B]" /> 
+          <button onClick={() => router.push('/dashboard')} className={navItemClass(pathname === '/dashboard')}>
+            <Inbox size={18} strokeWidth={1.5} className={pathname === '/dashboard' ? 'text-[#FFB26B]' : 'text-stone-400 group-hover:text-stone-600'} />
             <span className="text-[13px] font-medium">Briefings</span>
           </button>
-          <button 
-            onClick={() => router.push('/settings')}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-stone-500 hover:text-stone-900 hover:bg-white hover:shadow-sm hover:border-stone-100 border border-transparent transition-all duration-200 group"
-          >
-            <Settings size={18} strokeWidth={1.5} className="text-stone-400 group-hover:text-stone-600" /> 
+          <button onClick={() => router.push('/dashboard/feeds')} className={navItemClass(pathname === '/dashboard/feeds')}>
+            <Rss size={18} strokeWidth={1.5} className={pathname === '/dashboard/feeds' ? 'text-[#FFB26B]' : 'text-stone-400 group-hover:text-stone-600'} />
+            <span className="text-[13px] font-medium">Feeds</span>
+          </button>
+          <button onClick={() => router.push('/settings')} className={navItemClass(pathname === '/settings')}>
+            <Settings size={18} strokeWidth={1.5} className={pathname === '/settings' ? 'text-[#FFB26B]' : 'text-stone-400 group-hover:text-stone-600'} />
             <span className="text-[13px] font-medium">Settings</span>
           </button>
         </div>
 
         {/* Archive List */}
+        {allDigests.length > 0 && (
         <div className="flex-1 overflow-hidden flex flex-col">
           <h2 className="text-[11px] font-semibold uppercase tracking-widest text-stone-400 mb-4 px-2">Archive</h2>
           <div className="overflow-y-auto flex-1 space-y-1 pr-2 -mr-2">
             {allDigests.map((d) => {
               const isActive = activeDigest?.id === d.id;
               return (
-                <button 
+                <button
                   key={d.id}
-                  onClick={() => onSelectDigest(d)}
+                  onClick={() => onSelectDigest?.(d)}
                   className={`w-full text-left px-4 py-4 rounded-xl transition-all duration-200 group ${
                     isActive 
                       ? 'bg-white shadow-sm border border-stone-100' 
@@ -72,6 +82,7 @@ export function Sidebar({ allDigests, activeDigest, profile, onSelectDigest }: S
             })}
           </div>
         </div>
+        )}
       </nav>
 
       {/* User Profile - Minimal */}

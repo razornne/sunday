@@ -6,6 +6,10 @@ on:
     - cron: '0 * * * *'
   workflow_dispatch: # Позволяет запустить скрипт вручную кнопкой на GitHub
 
+defaults:
+  run:
+    working-directory: sunday_backend
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,7 +26,13 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run Digest Script
+      - name: Fetch RSS feeds
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python rss_fetcher.py
+
+      - name: Run digest scheduler
         # Здесь мы передаем секреты GitHub в переменные окружения скрипта
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -30,5 +40,4 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        run: python weekly_digest.py
+        run: python scheduler.py
