@@ -10,8 +10,7 @@ export default function LandingPage() {
     setStatus('loading');
 
     try {
-      // Отправляем данные на наш Python Backend
-      const response = await fetch('http://127.0.0.1:8000/api/waitlist', {
+      const response = await fetch('/api/subscribe', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

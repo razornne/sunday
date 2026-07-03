@@ -19,7 +19,11 @@ app = FastAPI()
 # 2. НАСТРОЙКА CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://sunday-dashboard.vercel.app"], # Добавь свой прод домен, если есть
+    allow_origins=[
+        "http://localhost:3000",
+        "https://sunday-dashboard.vercel.app",
+        "https://sunday-dashboard-omega.vercel.app",
+    ], # sunday-dashboard-omega.vercel.app - фактический прод-домен Vercel-проекта
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
